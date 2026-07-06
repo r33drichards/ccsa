@@ -1,0 +1,140 @@
+# Stationary melon-compressor turtle — declarative craftgen spec, TWO test groups.
+#
+#   uv run craftgen.py examples/melon-compressor.yaml --max-steps 30
+#
+# The agent writes ONE Lua program (/work/compressor.lua). It is validated by two
+# groups of sim nodes that must BOTH pass:
+#
+#   GROUP 1 — sim path (`sim` available): stationary crafty turtles with an input
+#     chest above (melon slices) and an output chest below. They prove the
+#     drain -> compress(9->1) -> deposit loop and the leftover handling.
+#
+#   GROUP 2 — nil-sim / real path (`nil_sim: true` nil's the `sim` global, so the
+#     program runs exactly as on a real turtle). This program never touches
+#     `sim.*` (no movement, no GPS), so it must behave identically — a program
+#     that reaches for sim.* unguarded crashes here instead of on your real turtle.
+#
+# World model (stationary turtle at 8,64,8):
+#   - input chest ABOVE  at (8,65,8): minecraft:melon_slice
+#   - output chest BELOW at (8,63,8): starts empty; ends with minecraft:melon blocks
+#   - recipe: a full 3x3 of melon slices (9) -> 1 melon block (built into the
+#     engine; also injectable via world.recipes).
+
+task: >-
+  Write a CC:Tweaked (ComputerCraft) program for a STATIONARY CRAFTY turtle and
+  save it to /work/compressor.lua. The turtle never moves. A chest sits directly
+  ABOVE it (input, full of minecraft:melon_slice) and a chest directly BELOW it
+  (output, initially empty).
+
+
+  The turtle must, on a loop:
+
+  1. Pull melon slices from the chest ABOVE (turtle.suckUp) until it can pull no
+     more.
+
+  2. Compress them: arrange 9 melon slices into the 3x3 crafting grid (turtle
+     inventory slots 1,2,3,5,6,7,9,10,11 — every slot OUTSIDE that 3x3 must be
+     empty when you call turtle.craft) and call turtle.craft() to make
+     minecraft:melon blocks. Nine slices make one block; you can make several at
+     once by putting an equal number of slices in each of the nine grid slots.
+
+  3. Deposit every crafted minecraft:melon block into the chest BELOW
+     (turtle.dropDown).
+
+  4. Any slices left over (fewer than a full 3x3, i.e. fewer than 9) go back into
+     the chest ABOVE (turtle.dropUp) so nothing is lost.
+
+  Keep going until the input chest holds fewer than 9 slices, then STOP. Do NOT
+  use sim.* / GPS / movement — this turtle is stationary, so the program is the
+  same in the sim and on the real device. Do NOT emit SIM_RESULT or run any test
+  yourself; each turtle node has a world.test(sim) post-condition the runtime runs
+  automatically after your program ends.
+
+sim:
+  timeout_ms: 60000
+  nodes:
+    # ================= GROUP 1: sim path (sim available) =================
+    # 63 slices -> exactly 7 blocks, 0 leftover.
+    - label: sim_exact
+      collect: true
+      program: "@file:compressor.lua"
+      world_lua: |
+        local N = 63
+        return {
+          start = { x = 8, y = 64, z = 8, facing = 'south', fuel = 20000 },
+          chests = {
+            ['8,65,8'] = { { name = 'minecraft:melon_slice', count = 63 } },
+            ['8,63,8'] = {},
+          },
+          test = function(sim)
+            local function sumIn(x, y, z, name)
+              local ch, t = sim.chest(x, y, z), 0
+              if ch then for _, it in ipairs(ch) do if it.name == name then t = t + it.count end end end
+              return t
+            end
+            sim.assertEq(sumIn(8, 63, 8, 'minecraft:melon'), math.floor(N / 9), 'melon blocks in lower chest')
+            sim.assertEq(sumIn(8, 65, 8, 'minecraft:melon_slice'), N % 9, 'leftover slices back in upper chest')
+            local inv, held = sim.inventory(), 0
+            for i = 1, 16 do if inv[i] then held = held + inv[i].count end end
+            sim.assertEq(held, 0, 'turtle inventory emptied')
+          end,
+        }
+
+    # 140 slices (stacks 64+64+12) -> 15 blocks, 5 leftover.
+    - label: sim_remainder
+      collect: true
+      program: "@file:compressor.lua"
+      world_lua: |
+        local N = 140
+        return {
+          start = { x = 8, y = 64, z = 8, facing = 'south', fuel = 20000 },
+          chests = {
+            ['8,65,8'] = {
+              { name = 'minecraft:melon_slice', count = 64 },
+              { name = 'minecraft:melon_slice', count = 64 },
+              { name = 'minecraft:melon_slice', count = 12 },
+            },
+            ['8,63,8'] = {},
+          },
+          test = function(sim)
+            local function sumIn(x, y, z, name)
+              local ch, t = sim.chest(x, y, z), 0
+              if ch then for _, it in ipairs(ch) do if it.name == name then t = t + it.count end end end
+              return t
+            end
+            sim.assertEq(sumIn(8, 63, 8, 'minecraft:melon'), math.floor(N / 9), 'melon blocks in lower chest')
+            sim.assertEq(sumIn(8, 65, 8, 'minecraft:melon_slice'), N % 9, 'leftover slices back in upper chest')
+          end,
+        }
+
+    # ========= GROUP 2: nil-sim / real path (sim nil'd) =========
+    # `nil_sim: true` runs compressor.lua with `sim` == nil, exactly like a real
+    # turtle. 200 slices (64*3 + 8) -> 22 blocks, 2 leftover.
+    - label: real_nil_sim
+      collect: true
+      nil_sim: true
+      position: [8, 64, 8]
+      program: "@file:compressor.lua"
+      world_lua: |
+        local N = 200
+        return {
+          start = { x = 8, y = 64, z = 8, facing = 'south', fuel = 20000 },
+          chests = {
+            ['8,65,8'] = {
+              { name = 'minecraft:melon_slice', count = 64 },
+              { name = 'minecraft:melon_slice', count = 64 },
+              { name = 'minecraft:melon_slice', count = 64 },
+              { name = 'minecraft:melon_slice', count = 8 },
+            },
+            ['8,63,8'] = {},
+          },
+          test = function(sim)
+            local function sumIn(x, y, z, name)
+              local ch, t = sim.chest(x, y, z), 0
+              if ch then for _, it in ipairs(ch) do if it.name == name then t = t + it.count end end end
+              return t
+            end
+            sim.assertEq(sumIn(8, 63, 8, 'minecraft:melon'), math.floor(N / 9), 'melon blocks in lower chest (nil-sim)')
+            sim.assertEq(sumIn(8, 65, 8, 'minecraft:melon_slice'), N % 9, 'leftover slices back in upper chest (nil-sim)')
+          end,
+        }
