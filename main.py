@@ -182,11 +182,33 @@ _ASYNC_TOOLS = {"get_execution", "get_execution_output", "cancel_execution", "li
 _TERMINAL_STATES = {"completed", "succeeded", "success", "failed", "error", "cancelled", "canceled", "timeout"}
 
 
+def _reconnect(http: httpx.Client, conn: McpConn) -> None:
+    """Re-establish the MCP session (Mcp-Session-Id) after it drops — e.g. mcp-v8
+    closes an idle session during a long LLM turn. Reuses the SAME
+    X-MCP-Session-Id, so the persistent /work (and everything written to it) is
+    preserved across the reconnect."""
+    headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
+    if conn.work_session:
+        headers["X-MCP-Session-Id"] = conn.work_session
+    init = http.post(conn.url, headers=headers, timeout=30.0, json={
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-03-26", "capabilities": {},
+                   "clientInfo": {"name": "mini-mcp-agent", "version": "0.1.0"}}})
+    init.raise_for_status()
+    conn.session_id = init.headers.get("mcp-session-id")
+    http.post(conn.url, headers=conn._headers(), timeout=30.0,
+              json={"jsonrpc": "2.0", "method": "notifications/initialized"})
+
+
 def _raw_call(http: httpx.Client, conn: McpConn, name: str, arguments: dict) -> str:
-    """One tools/call -> flattened text. Raises on a transport error."""
-    r = http.post(conn.url, headers=conn._headers(), timeout=600.0, json={
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {"name": name, "arguments": arguments}})
+    """One tools/call -> flattened text. Transparently re-establishes the session
+    and retries once on a 404 (dropped/expired MCP session). Raises otherwise."""
+    payload = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+               "params": {"name": name, "arguments": arguments}}
+    r = http.post(conn.url, headers=conn._headers(), timeout=600.0, json=payload)
+    if r.status_code == 404:
+        _reconnect(http, conn)
+        r = http.post(conn.url, headers=conn._headers(), timeout=600.0, json=payload)
     r.raise_for_status()
     result = _sse_json(r).get("result", {})
     parts = []

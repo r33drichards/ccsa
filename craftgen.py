@@ -155,22 +155,41 @@ def _validator_js(spec: TaskSpec) -> str:
     verdict. Runs inside the sandbox (same per-session /work as the agent)."""
     nodes = []
     prog_files: dict[str, str] = {}
+    nil_sim: dict[str, bool] = {}
+    by_name = {p.name: p for p in spec.programs}
     for i, node in enumerate(spec.sim["nodes"]):
         node = dict(node)
+        # `nil_sim: true` (craftgen-only, stripped before craftos sees it) runs the
+        # node's program with the `sim` global nil'd — exercising the REAL-device
+        # code path (sim is simulator-only). The post-condition still runs: the
+        # craftos postlude reads _G.sim, which a `local sim = nil` prefix leaves
+        # intact. Use it with a real input source (e.g. GPS host nodes) so a
+        # program that reaches for sim.* unguarded fails the test.
+        ns = bool(node.pop("nil_sim", False))
         prog = node.get("program")
-        if isinstance(prog, str) and FILE_SIGIL.match(prog.strip()):
-            ref = next(p for p in spec.programs if p.node_index == i)
+        m = FILE_SIGIL.match(prog.strip()) if isinstance(prog, str) else None
+        if m:
+            # Resolve by @file NAME, so several nodes can share one program file
+            # (e.g. idempotency: the same turtle.lua run from different starts).
+            ref = by_name[m.group(1).strip()]
             node["program"] = None
             prog_files[str(i)] = ref.path
+            if ns:
+                nil_sim[str(i)] = True
+        elif ns and isinstance(prog, str):
+            node["program"] = "local sim = nil\n" + prog   # inline program
         nodes.append(node)
     top = {k: v for k, v in spec.sim.items() if k != "nodes"}
     return (
         f"(0,eval)(await fs.readFile({json.dumps(WORK_BOOTSTRAP)},'utf8'));\n"
         f"const nodes = {json.dumps(nodes)};\n"
         f"const progFiles = {json.dumps(prog_files)};\n"
+        f"const nilSim = {json.dumps(nil_sim)};\n"
         "const missing = [];\n"
         "for (const k of Object.keys(progFiles)) {\n"
-        "  try { nodes[k].program = await fs.readFile(progFiles[k],'utf8'); }\n"
+        "  try { let src = await fs.readFile(progFiles[k],'utf8');\n"
+        "    if (nilSim[k]) src = 'local sim = nil\\n' + src;\n"
+        "    nodes[k].program = src; }\n"
         "  catch (e) { missing.push(progFiles[k]); }\n"
         "}\n"
         "if (missing.length) { console.log(JSON.stringify({status:'missing', missing})); }\n"
@@ -248,6 +267,20 @@ def build_system_prompt(spec: TaskSpec) -> str:
         "declaring success without a passing validator does nothing. You SHOULD test your "
         "own program first by running the same sim via run_js + craftos(...) and inspecting "
         "the assertion log before relying on the validator.\n\n"
+        "FAIL OPEN ON A NIL `sim` (CRITICAL — the program must run on the REAL target too):\n"
+        "The `sim` global (sim.pos, sim.facing, sim.block, sim.chest, sim.assert*, setpos, "
+        "periphemu, ...) exists ONLY inside this simulator. On the real device `sim` is NIL, "
+        "and any unguarded `sim.xxx()` throws \"attempt to index a nil value ('sim')\" — the "
+        "program dies on the first line. So NEVER touch `sim.*` (or other sim-only globals) "
+        "unguarded. Fail open: guard every simulator-only call and provide a real fallback, "
+        "e.g.\n"
+        "  local x, z, facing\n"
+        "  if sim then x, z, facing = sim.pos().x, sim.pos().z, sim.facing()  -- sim only\n"
+        "  else <get it from the real world: gps.locate(), a peripheral, or a config const> end\n"
+        "Get genuine runtime inputs (position, orientation, block data) from the ACTUAL "
+        "environment (gps, turtle.inspect*, peripherals, configured constants) — treat `sim` "
+        "purely as an optional convenience. The generated program MUST behave correctly when "
+        "`sim == nil`.\n\n"
         "THE SIM / WORLD / POSTCONDITION (this exact spec is what the validator runs; your "
         "program is substituted for each @file node):\n```yaml\n" + sim_yaml + "```\n",
     ]

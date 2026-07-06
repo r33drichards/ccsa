@@ -1,0 +1,264 @@
+# Melon-farm harvester turtle — declarative craftgen spec, TWO test groups.
+#
+#   uv run craftgen.py examples/melon-farm.yaml --max-steps 30
+#
+# The agent writes ONE Lua program (/work/melon.lua). It is validated by two
+# groups of sim nodes that must BOTH pass:
+#
+#   GROUP 1 — sim path (`sim` available): turtle nodes booting at different
+#     positions. These prove the harvest/navigation logic and idempotence.
+#
+#   GROUP 2 — nil-sim / real path (`nil_sim: true` nil's the `sim` global, so the
+#     program runs exactly as it would on a real turtle). A GPS constellation
+#     (4 host nodes) lets the program self-locate with gps.locate(). This proves
+#     the program FAILS OPEN on a nil `sim` — a program that reaches for sim.*
+#     unguarded crashes here instead of on your real turtle.
+#
+# Farm model:
+#   - plants at y=57 in a CHECKERBOARD: melon on (x+z) even, stem on odd.
+#   - rectangle x=3..13, z=33..53 (116 melons, 115 stems).
+#   - turtle works in the y=58 plane; HOME = (13,58,33); chest above at (13,59,33).
+#   - real turtle is placed facing SOUTH (the nil-sim nodes boot facing south).
+
+task: >-
+  Write a CC:Tweaked (ComputerCraft) turtle program and save it to
+  /work/melon.lua. It harvests a melon farm and returns home, and must be
+  IDEMPOTENT: correct no matter where in its plane it boots.
+
+
+  FARM (absolute Minecraft coords):
+
+  - Plant layer is y=57. Melons grow in a CHECKERBOARD — a 'minecraft:melon'
+    block on every square where (x + z) is even, a 'minecraft:melon_stem' on the
+    odd squares. Farm rectangle is x=3..13, z=33..53 inclusive; both corners
+    (13,57,33) and (3,57,53) are melon squares.
+
+  - The turtle works ONE block above the plants, in the y=58 air plane. HOME /
+    start is (13,58,33) — one block above corner (13,57,33). A chest sits
+    directly ABOVE home at (13,59,33).
+
+
+  REQUIREMENTS:
+
+  1. The turtle may boot at ANY position in the y=58 plane. Determine your
+     absolute position and facing at startup, but FAIL OPEN on a nil `sim` (the
+     real device has no `sim` global — one of the test worlds nil's it): get your
+     (x, z) from GPS on the real device — open/create a wireless modem and call
+     gps.locate() — and take facing from a configured constant (the turtle is
+     placed facing SOUTH). Use sim.pos()/sim.facing() ONLY inside an
+     `if sim then ... end` guard as a simulator convenience; NEVER call sim.*
+     unguarded (that crashes with "attempt to index a nil value ('sim')"). In the
+     sim, create the modem with `if periphemu then periphemu.create('top','modem',
+     NET, true) end` and sleep briefly so the GPS hosts answer. Then track your
+     own (x, z, facing) as you move, and first navigate to HOME (13,58,33).
+
+  2. STAY in the y=58 plane at all times — never move up or down. The ONLY
+     downward action allowed is turtle.digDown() to harvest a melon directly
+     below you (that does not move the turtle).
+
+  3. Sweep the whole farm rectangle in a boustrophedon (snake) pattern so you
+     pass over every square. At each square call turtle.inspectDown(); if the
+     block below is 'minecraft:melon', turtle.digDown() to harvest it. Do NOT dig
+     stems or anything else.
+
+  4. Return to HOME (13,58,33).
+
+  5. At HOME, deposit your whole inventory into the chest above: for each of the
+     16 slots, select it and turtle.dropUp(). If a drop fails, wait briefly and
+     retry. Then refuel if fuel is low (best effort). Give the turtle plenty of
+     starting fuel; refuel is a no-op here.
+
+  6. Repeat the mining cycle while you still have enough fuel and free inventory
+     space. The farm does NOT regrow in this sim, so STOP once a full sweep
+     harvests ZERO melons. Always END the program AT HOME (13,58,33).
+
+
+  Do NOT emit SIM_RESULT or run any test yourself — each turtle node has a
+  world.test(sim) postcondition the runtime runs automatically after your program
+  ends. Just make the program terminate at home with every melon harvested and
+  deposited, in BOTH the sim-path nodes and the nil-sim GPS nodes.
+
+sim:
+  timeout_ms: 60000
+  nodes:
+    # ================= GROUP 1: sim path (sim available) =================
+    - label: sim_from_home
+      collect: true
+      program: "@file:melon.lua"
+      world_lua: |
+        local XMIN, XMAX, ZMIN, ZMAX = 3, 13, 33, 53
+        return {
+          start = { x = 13, y = 58, z = 33, facing = 'south', fuel = 20000 },
+          chests = { ['13,59,33'] = {} },
+          generate = function(x, y, z)
+            if x < XMIN or x > XMAX or z < ZMIN or z > ZMAX then return nil end
+            if y == 56 then return 'minecraft:dirt' end
+            if y == 57 then
+              if (x + z) % 2 == 0 then return 'minecraft:melon' else return 'minecraft:melon_stem' end
+            end
+            return nil
+          end,
+          test = function(sim)
+            local remaining, stems = 0, 0
+            for x = XMIN, XMAX do
+              for z = ZMIN, ZMAX do
+                local b = sim.block(x, 57, z)
+                if (x + z) % 2 == 0 then
+                  if b == 'minecraft:melon' then remaining = remaining + 1 end
+                elseif b == 'minecraft:melon_stem' then
+                  stems = stems + 1
+                end
+              end
+            end
+            sim.assertEq(remaining, 0, 'all eligible melons harvested')
+            sim.assertEq(stems, 115, 'melon stems left untouched')
+            sim.assertPos(13, 58, 33, 'ended at HOME')
+            local chest = sim.chest(13, 59, 33)
+            local total = 0
+            if chest then for _, it in ipairs(chest) do
+              if it.name == 'minecraft:melon' then total = total + it.count end
+            end end
+            sim.assertEq(total, 116, 'all 116 melons deposited in chest')
+          end,
+        }
+
+    - label: sim_from_far
+      collect: true
+      program: "@file:melon.lua"
+      world_lua: |
+        local XMIN, XMAX, ZMIN, ZMAX = 3, 13, 33, 53
+        return {
+          start = { x = 3, y = 58, z = 53, facing = 'east', fuel = 20000 },
+          chests = { ['13,59,33'] = {} },
+          generate = function(x, y, z)
+            if x < XMIN or x > XMAX or z < ZMIN or z > ZMAX then return nil end
+            if y == 56 then return 'minecraft:dirt' end
+            if y == 57 then
+              if (x + z) % 2 == 0 then return 'minecraft:melon' else return 'minecraft:melon_stem' end
+            end
+            return nil
+          end,
+          test = function(sim)
+            local remaining, stems = 0, 0
+            for x = XMIN, XMAX do
+              for z = ZMIN, ZMAX do
+                local b = sim.block(x, 57, z)
+                if (x + z) % 2 == 0 then
+                  if b == 'minecraft:melon' then remaining = remaining + 1 end
+                elseif b == 'minecraft:melon_stem' then
+                  stems = stems + 1
+                end
+              end
+            end
+            sim.assertEq(remaining, 0, 'all eligible melons harvested')
+            sim.assertEq(stems, 115, 'melon stems left untouched')
+            sim.assertPos(13, 58, 33, 'ended at HOME')
+            local chest = sim.chest(13, 59, 33)
+            local total = 0
+            if chest then for _, it in ipairs(chest) do
+              if it.name == 'minecraft:melon' then total = total + it.count end
+            end end
+            sim.assertEq(total, 116, 'all 116 melons deposited in chest')
+          end,
+        }
+
+    # ============ GPS constellation (4 non-coplanar hosts) ============
+    - label: gps_h1
+      position: [3, 70, 33]
+      program: "periphemu.create('top','modem',NET,true) shell.run('gps','host',3,70,33)"
+    - label: gps_h2
+      position: [13, 70, 33]
+      program: "periphemu.create('top','modem',NET,true) shell.run('gps','host',13,70,33)"
+    - label: gps_h3
+      position: [3, 70, 53]
+      program: "periphemu.create('top','modem',NET,true) shell.run('gps','host',3,70,53)"
+    - label: gps_h4
+      position: [8, 95, 43]
+      program: "periphemu.create('top','modem',NET,true) shell.run('gps','host',8,95,43)"
+
+    # ========= GROUP 2: nil-sim / real path (sim nil'd, GPS locate) =========
+    # `nil_sim: true` runs melon.lua with `sim` == nil, exactly like the real
+    # turtle. `position` is the turtle's GPS location; it boots facing SOUTH.
+    - label: real_from_middle
+      collect: true
+      nil_sim: true
+      position: [8, 58, 43]
+      program: "@file:melon.lua"
+      world_lua: |
+        local XMIN, XMAX, ZMIN, ZMAX = 3, 13, 33, 53
+        return {
+          start = { x = 8, y = 58, z = 43, facing = 'south', fuel = 20000 },
+          chests = { ['13,59,33'] = {} },
+          generate = function(x, y, z)
+            if x < XMIN or x > XMAX or z < ZMIN or z > ZMAX then return nil end
+            if y == 56 then return 'minecraft:dirt' end
+            if y == 57 then
+              if (x + z) % 2 == 0 then return 'minecraft:melon' else return 'minecraft:melon_stem' end
+            end
+            return nil
+          end,
+          test = function(sim)
+            local remaining, stems = 0, 0
+            for x = XMIN, XMAX do
+              for z = ZMIN, ZMAX do
+                local b = sim.block(x, 57, z)
+                if (x + z) % 2 == 0 then
+                  if b == 'minecraft:melon' then remaining = remaining + 1 end
+                elseif b == 'minecraft:melon_stem' then
+                  stems = stems + 1
+                end
+              end
+            end
+            sim.assertEq(remaining, 0, 'all eligible melons harvested (nil-sim/GPS)')
+            sim.assertEq(stems, 115, 'melon stems left untouched (nil-sim/GPS)')
+            sim.assertPos(13, 58, 33, 'ended at HOME (nil-sim/GPS)')
+            local chest = sim.chest(13, 59, 33)
+            local total = 0
+            if chest then for _, it in ipairs(chest) do
+              if it.name == 'minecraft:melon' then total = total + it.count end
+            end end
+            sim.assertEq(total, 116, 'all 116 melons deposited in chest (nil-sim/GPS)')
+          end,
+        }
+
+    - label: real_from_far
+      collect: true
+      nil_sim: true
+      position: [3, 58, 53]
+      program: "@file:melon.lua"
+      world_lua: |
+        local XMIN, XMAX, ZMIN, ZMAX = 3, 13, 33, 53
+        return {
+          start = { x = 3, y = 58, z = 53, facing = 'south', fuel = 20000 },
+          chests = { ['13,59,33'] = {} },
+          generate = function(x, y, z)
+            if x < XMIN or x > XMAX or z < ZMIN or z > ZMAX then return nil end
+            if y == 56 then return 'minecraft:dirt' end
+            if y == 57 then
+              if (x + z) % 2 == 0 then return 'minecraft:melon' else return 'minecraft:melon_stem' end
+            end
+            return nil
+          end,
+          test = function(sim)
+            local remaining, stems = 0, 0
+            for x = XMIN, XMAX do
+              for z = ZMIN, ZMAX do
+                local b = sim.block(x, 57, z)
+                if (x + z) % 2 == 0 then
+                  if b == 'minecraft:melon' then remaining = remaining + 1 end
+                elseif b == 'minecraft:melon_stem' then
+                  stems = stems + 1
+                end
+              end
+            end
+            sim.assertEq(remaining, 0, 'all eligible melons harvested (nil-sim/GPS)')
+            sim.assertEq(stems, 115, 'melon stems left untouched (nil-sim/GPS)')
+            sim.assertPos(13, 58, 33, 'ended at HOME (nil-sim/GPS)')
+            local chest = sim.chest(13, 59, 33)
+            local total = 0
+            if chest then for _, it in ipairs(chest) do
+              if it.name == 'minecraft:melon' then total = total + it.count end
+            end end
+            sim.assertEq(total, 116, 'all 116 melons deposited in chest (nil-sim/GPS)')
+          end,
+        }
