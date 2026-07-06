@@ -1,0 +1,9 @@
+.mcp-work/
+__pycache__/
+*.pyc
+result
+# prebuilt mcp-v8 binary (123MB) — fetch with ./fetch-mcp-v8.sh
+bin/mcp-v8
+bin/*.gz
+.DS_Store
+**/.DS_Store
