@@ -19,7 +19,7 @@ export PI_CODING_AGENT_DIR="$PWD/pi-turtle/agent" # isolated config (no global p
 
 ARGS=(--provider ollama --model glm-5.2 -a
       -e pi-turtle/index.ts
-      --system-prompt "$(cat pi-turtle/system.md)"
+      --append-system-prompt "$(cat pi-turtle/system.md)"  # ADD to pi's default (keeps tool-calling scaffolding)
       --no-skills                                 # drop GLOBAL skills…
       --no-context-files)                         # …and global ~/AGENTS.md / CLAUDE.md
 
@@ -28,10 +28,15 @@ for d in languages/skills/*/; do
   [ -f "${d}SKILL.md" ] && ARGS+=(--skill "$d")
 done
 
-if [ "${1:-}" = "--restricted" ]; then
-  ARGS+=(--tools turtle_sim)                       # sandbox sub-agent: only the sim tool
-  shift
-fi
+# Flags (any order): --restricted (sandbox to turtle_sim only), --json (stream
+# line-delimited JSON events — reliable for headless/CI; text mode is buffered).
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --restricted) ARGS+=(--tools turtle_sim); shift ;;
+    --json)       ARGS+=(--mode json); shift ;;
+    *) break ;;
+  esac
+done
 
 if ! curl -s -o /dev/null "http://127.0.0.1:8790/mcp" 2>/dev/null; then
   echo "warning: languages server not reachable on :8790 — start it first:" >&2

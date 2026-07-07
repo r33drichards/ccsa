@@ -1,60 +1,110 @@
 # pi-turtle
 
-A purpose-built [pi](https://pi.dev) package for making **CC:Tweaked turtle
-programs** by autoresearching them against the craftos sim. The agent writes a
-Lua program, tests it with the `turtle_sim` tool, reads the failing assertions,
-and iterates until every sim postcondition passes.
+An AI agent that **writes working CC:Tweaked turtle programs for you.** You
+describe the turtle you want; the agent writes Lua, tests it against a simulator,
+reads the failures, and keeps fixing it until every check passes.
 
-## Quickstart
+It's a [pi](https://pi.dev) agent called **Turtlewright**, wired to a sandboxed
+ComputerCraft simulator through one tool (`turtle_sim`).
 
-**1. Start the languages sim server** (self-hosted; has the `turtle.craft` +
-op-budget engine):
+---
+
+## 1. One-time setup
+
+```bash
+# a) install the pi agent runtime
+npm install -g @earendil-works/pi-coding-agent
+
+# b) install this agent's dependencies
+cd /Users/robertwendt/ccsa/pi-turtle && npm install && cd ..
+
+# c) add your Ollama Cloud key (used by the agent's model, glm-5.2)
+echo "OLLAMA_API_KEY=sk-..." > .env        # in the repo root
+```
+
+## 2. Start the simulator (leave it running)
+
+The agent tests programs against a local sim server. Start it once:
 
 ```bash
 MCP_V8_PORT=8790 MCP_V8_SESSION_DB_PATH=/tmp/mcp-v8-pi ./run-languages-mcp.sh &
 ```
 
-**2. Pilot it** (run in a real terminal — pi is a TUI):
+## 3. Use it
+
+### Interactive (recommended — watch it work)
 
 ```bash
-./pi-turtle/pilot.sh                # Turtlewright + repo skills + file tools + turtle_sim
-./pi-turtle/pilot.sh --restricted   # sandbox: ONLY turtle_sim (no bash/edit/write)
+./pi-turtle/pilot.sh
 ```
 
-Then tell it what turtle to build, e.g. *"Make a melon-compressor turtle: pull
-slices from the chest above, craft 9→1 into melon blocks, drop them below.
-Iterate with turtle_sim until 5/5."* It loops on its own until the score is maxed.
+pi opens a chat. Describe your turtle, for example:
 
-## Prerequisites (one-time)
+> Make a stationary crafting turtle: pull `minecraft:melon_slice` from the chest
+> above, compress 9→1 into `minecraft:melon` blocks with `turtle.craft()`, drop
+> the blocks into the chest below, and put leftover slices back above. Use
+> `turtle_sim` to test, and keep iterating until the score is 5/5.
 
-- `pi` installed: `npm install -g @earendil-works/pi-coding-agent`
-- Extension deps: `cd pi-turtle && npm install` (installs `typebox`)
-- `.env` at the repo root with `OLLAMA_API_KEY=...` (Ollama Cloud; loaded by
-  `pilot.sh`). The provider is defined in `pi-turtle/agent/models.json`.
+You'll see it call `turtle_sim`, get back `score: N/5` plus the failing
+assertions, fix its program, and try again until it passes. The finished program
+is written to `spike/melon-loop/prog.lua`.
 
-## What makes it purpose-built
+Handy in-session keys: `/` commands, `ctrl+c`/`ctrl+d` to exit.
 
-`pilot.sh` runs pi in an **isolated** config so none of your global setup bleeds in:
+### Headless (one shot, for scripts/CI)
 
-| lever | effect |
+```bash
+./pi-turtle/pilot.sh --restricted -p "Make a melon-compressor turtle (9 slices -> 1 block); iterate with turtle_sim until 5/5."
+```
+
+`-p` runs non-interactively and exits when done. `--restricted` locks the agent
+to **only** the `turtle_sim` tool (no file/shell access) — the safe "just make
+the turtle" sandbox. Drop `--restricted` to also give it read/edit/write.
+
+Add `--json` to stream **line-delimited JSON** events (one per line) instead of
+buffered text — reliable for logs/CI. Each `turtle_sim` result arrives as a
+`tool_execution_end` event carrying the score, e.g.:
+
+```bash
+./pi-turtle/pilot.sh --restricted --json -p "Make a melon-compressor turtle." \
+  | grep --line-buffered '"type":"tool_execution_end"'
+```
+
+## Modes at a glance
+
+| command | tools the agent has |
 |---|---|
-| `PI_CODING_AGENT_DIR=pi-turtle/agent` | isolated provider/models; global extensions don't load |
-| `--no-skills` + `--skill languages/skills/*` | drops global skills, loads only this repo's CC domain skills (`cc-tweaked`, `craftos-sim`, `turtle-*`, `picat`, …) |
-| `--no-context-files` | no global `~/AGENTS.md` / `CLAUDE.md` |
-| `--system-prompt pi-turtle/system.md` | boots as **Turtlewright**, pre-briefed on the loop + crafting rules |
-| `--restricted` → `--tools turtle_sim` | sandbox sub-agent: its only capability is submitting programs to the sim |
+| `./pi-turtle/pilot.sh` | `turtle_sim` + read, edit, write, bash |
+| `./pi-turtle/pilot.sh --restricted` | `turtle_sim` only (sandbox) |
 
-## The `turtle_sim` tool
+Both load this repo's CC:Tweaked skills (`cc-tweaked` API reference,
+`craftos-sim`, `turtle-crafter-compressor`, …) so the agent knows the API and
+proven patterns, and neither loads your global pi skills or `~/AGENTS.md`.
 
-Defined in `index.ts`. `turtle_sim(program)` writes the full Lua program to the
-sim's `/work`, runs it against every sim node via the languages server, and
-returns `score: N/total` plus the failing assertions. The engine's **op-budget**
-means a non-terminating program aborts in seconds (scores low) instead of
-hanging — see the mcp-js execution-timeout limitation this works around.
+## How it works (short version)
 
-## Status
+- **`turtle_sim(program)`** (defined in `index.ts`) writes your full Lua program
+  into the sim's `/work`, runs it against every sim world, and returns the score
+  (postconditions passed) + failing assertions.
+- The sim is the self-hosted `run-languages-mcp.sh` server. Its engine has a
+  **turtle-op budget**, so a program that loops forever aborts in ~20s and scores
+  low instead of hanging.
+- `pilot.sh` runs pi in an isolated config (`PI_CODING_AGENT_DIR=pi-turtle/agent`)
+  with the Ollama provider in `agent/models.json` and the Turtlewright briefing in
+  `system.md`.
 
-- ✅ Phase 2 (autoresearch loop): `turtle_sim` + the hang-proof sim — working.
-- ⛔ Phase 1 (orchestrator to author a *new* sim interactively): not built; the
-  sim spec is currently the fixed melon-compressor (`spike/melon-loop/spec.yaml`).
-- ⛔ Phase 3 (`gh gist` publish of the passing program): not built.
+## Troubleshooting
+
+- **"languages server not reachable on :8790"** — start the sim (step 2).
+- **Agent replies but never calls `turtle_sim`** — make sure `pilot.sh` uses
+  `--append-system-prompt` (it does); a full `--system-prompt` replace strips
+  pi's tool-calling instructions.
+- **The turtle task the agent works on** is currently fixed to the melon
+  compressor (`spike/melon-loop/spec.yaml`). Authoring a *new* sim from chat
+  (the orchestrator phase) isn't built yet.
+
+## What's not built yet
+
+- **Orchestrator** to co-author a brand-new sim/test from chat (today the sim is
+  the fixed melon-compressor).
+- **Publish** the finished program to a GitHub gist.
