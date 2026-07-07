@@ -7,11 +7,36 @@
 //   runJs        - raw run_js passthrough, so the agent can inspect the sandbox itself
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { ApplicationFailure } from "@temporalio/activity";
 import * as lang from "./mcp-languages.ts";
 import { validatorFromWorkCode, parseSim, skillSeedFiles, WORK_PROG, type SimResult } from "./sim.ts";
 import * as comp from "./compaction.ts";
 import { recordTokens, recordCall } from "./telemetry.ts";
 import type { Env } from "./arena-object.ts";
+
+// ── Ollama error classification (drives Temporal retry) ─────────────────────
+// The provider fails intermittently; distinguish transient (retry) from permanent (fail fast)
+// and always attach an actionable message so the workflow's FAILED reason is legible.
+//
+// A fetch rejection from undici is an opaque "fetch failed" TypeError — the useful detail
+// (ENOTFOUND / ECONNREFUSED / UND_ERR_CONNECT_TIMEOUT / the abort on our 14-min timeout)
+// hides in e.cause. Surface it, then rethrow as a plain Error so Temporal RETRIES it.
+function networkError(what: string, url: string, e: any): Error {
+  const code = e?.cause?.code || e?.code || e?.name || "unknown";
+  const detail = e?.cause?.message || e?.message || String(e);
+  return new Error(`${what}: cannot reach Ollama at ${url} (${code}: ${detail}) — transient, retrying`);
+}
+
+// Turn a non-2xx HTTP response into the right kind of failure. 4xx (except 429) is a client
+// error — a bad OLLAMA_API_KEY or malformed request won't fix itself, so throw NON-RETRYABLE
+// to fail the workflow immediately with a clear cause. 5xx / 429 are transient -> plain Error
+// (Temporal retries).
+function httpError(what: string, url: string, status: number, body: string): Error {
+  const msg = `${what}: Ollama ${status} at ${url} — ${body.slice(0, 300)}`;
+  if (status >= 400 && status < 500 && status !== 429)
+    return ApplicationFailure.nonRetryable(`${msg} (client error — check OLLAMA_API_KEY / request; not retrying)`, "LlmClientError");
+  return new Error(`${msg} (server/rate-limit — retrying)`);
+}
 
 const REPO = join(import.meta.dirname, "..", "..");
 const LANG_URL = `http://127.0.0.1:${process.env.TURTLE_PORT || "8790"}/mcp`;
@@ -38,18 +63,19 @@ export type LlmOut = { content: string; toolCalls: { id: string; name: string; a
 // One completion. Env access is allowed in activities; Temporal owns retries.
 export async function callLlm(input: { messages: unknown[]; tools: unknown[]; model: string }): Promise<LlmOut> {
   const key = process.env.OLLAMA_API_KEY;
-  if (!key) throw new Error("OLLAMA_API_KEY not set");
   const model = process.env.TURTLEFLOW_MODEL || input.model || "glm-5.2";
+  if (!key) throw ApplicationFailure.nonRetryable("callLlm: OLLAMA_API_KEY not set", "LlmClientError");
+  const url = `${OLLAMA_BASE}/chat/completions`;
   let r: Response;
   try {
-    r = await fetch(`${OLLAMA_BASE}/chat/completions`, {
+    r = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
       body: JSON.stringify({ model, messages: input.messages, tools: input.tools, tool_choice: "auto", temperature: 0 }),
       signal: AbortSignal.timeout(840000), // 14 min, just under the 15-min activity ceiling
     });
-  } catch (e) { recordCall("completion", model, "error"); throw e; }
-  if (!r.ok) { recordCall("completion", model, "error"); throw new Error(`llm ${r.status}: ${(await r.text()).slice(0, 300)}`); }
+  } catch (e) { recordCall("completion", model, "error"); throw networkError("callLlm", url, e); }
+  if (!r.ok) { recordCall("completion", model, "error"); throw httpError("callLlm", url, r.status, await r.text()); }
   const j: any = await r.json();
   recordTokens("completion", model, j.usage);
   recordCall("completion", model, "ok");
@@ -104,8 +130,9 @@ function renderMessages(msgs: any[]): string {
 
 export async function summarize(input: { oldSummary: string; evicted: any[]; task: string }): Promise<{ summary: string; tokens: number }> {
   const key = process.env.OLLAMA_API_KEY;
-  if (!key) throw new Error("OLLAMA_API_KEY not set");
   const model = process.env.TURTLEFLOW_MODEL || "glm-5.2";
+  if (!key) throw ApplicationFailure.nonRetryable("summarize: OLLAMA_API_KEY not set", "LlmClientError");
+  const url = `${OLLAMA_BASE}/chat/completions`;
   const user =
     `PRIOR RECORD (may be empty on first compaction):\n<<<\n${input.oldSummary}\n>>>\n\n` +
     `TASK (first user message, for GOAL/invariants grounding):\n<<<\n${input.task}\n>>>\n\n` +
@@ -113,14 +140,14 @@ export async function summarize(input: { oldSummary: string; evicted: any[]; tas
     `Output the updated record now, template only.`;
   let r: Response;
   try {
-    r = await fetch(`${OLLAMA_BASE}/chat/completions`, {
+    r = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
       body: JSON.stringify({ model, temperature: 0, messages: [{ role: "system", content: SUMMARIZER_SYSTEM }, { role: "user", content: user }] }),
       signal: AbortSignal.timeout(840000), // 14 min, just under the 15-min activity ceiling
     });
-  } catch (e) { recordCall("summarize", model, "error"); throw e; }
-  if (!r.ok) { recordCall("summarize", model, "error"); throw new Error(`summarize ${r.status}: ${(await r.text()).slice(0, 300)}`); }
+  } catch (e) { recordCall("summarize", model, "error"); throw networkError("summarize", url, e); }
+  if (!r.ok) { recordCall("summarize", model, "error"); throw httpError("summarize", url, r.status, await r.text()); }
   const j: any = await r.json();
   recordTokens("summarize", model, j.usage);
   recordCall("summarize", model, "ok");

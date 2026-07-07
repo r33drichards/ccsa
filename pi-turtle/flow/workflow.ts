@@ -16,9 +16,14 @@ const { openSandbox, turtleSim, checkCompleted, runJs } = proxyActivities<typeof
 });
 // callLlm + compact use fewer retries — a retry with the SAME context just times out again, so
 // don't burn 6 attempts.
+// callLlm + compact hit Ollama, which fails intermittently ("fetch failed"). Temporal
+// retries the ACTIVITY in place (the workflow keeps its state and resumes — it does NOT
+// restart), so we retry generously to ride out a provider blip: up to 30 attempts,
+// backing off to one per minute (~30 min of coverage). A network/5xx/429 error is
+// retried; a 4xx client error (bad key/request) is thrown non-retryable and fails fast.
 const { callLlm, compact } = proxyActivities<typeof acts>({
   startToCloseTimeout: "15 minutes",
-  retry: { maximumAttempts: 5, initialInterval: "3 seconds", maximumInterval: "30 seconds" },
+  retry: { maximumAttempts: 30, initialInterval: "2 seconds", backoffCoefficient: 2, maximumInterval: "60 seconds" },
 });
 
 const TOOLS_SCHEMA_TOK = toolsSchemaTok(TOOLS); // static tool-schema token cost, for the gate
