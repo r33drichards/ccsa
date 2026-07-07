@@ -60,7 +60,7 @@ const sources = {
   // ROM, so the helper writes this into MEMFS at /app/craftos2/sim/engine.lua
   // before cc_run — turtle nodes (world / world_lua) need it to install the
   // `turtle` API. Plain Lua source; no transform.
-  craftos_engine: vendor("craftos-engine.lua"),
+  craftos_engine: readFileSync(join(here, "..", "sim", "craftos2", "sim", "engine.lua"), "utf8"),
   tla: transformWasmBindgen(vendor("tla_checker.js"), "tla_checker.js", [
     "check_spec",
     "check_spec_with_cfg",

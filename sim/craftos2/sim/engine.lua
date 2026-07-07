@@ -74,13 +74,28 @@ function M.install(world)
   local overrides = {}
   local initialBlocks = world.blocks or {}
 
-  -- Chest containers: key -> array of {name,count} slots.
-  local chests = {}
+  -- Chest containers: key -> array of {name,count} slots. `chestCap[key]` is an
+  -- optional max slot count (nil = unbounded, as before).
+  --   plain form:  chests = { ["x,y,z"] = { "minecraft:coal", {name=,count=} } }
+  --   config form: chests = { ["x,y,z"] = { items = {...}, double = "x,y,z", capacity = N } }
+  -- A `double` links two adjacent blocks to ONE shared inventory (a double chest,
+  -- 54 slots by default); the turtle can suck/drop from either half.
+  local chests, chestCap = {}, {}
   if world.chests then
-    for k, list in pairs(world.chests) do
+    for k, spec in pairs(world.chests) do
+      local items, dbl, cap = spec, nil, nil
+      if spec.items ~= nil or spec.double ~= nil or spec.capacity ~= nil then
+        items, dbl, cap = spec.items or {}, spec.double, spec.capacity
+      end
       local slots = {}
-      for _, it in ipairs(list) do slots[#slots + 1] = normName(it) end
+      for _, it in ipairs(items) do slots[#slots + 1] = normName(it) end
       chests[k] = slots
+      if dbl then
+        chests[dbl] = slots               -- both halves share one inventory
+        cap = cap or 54
+        chestCap[dbl] = cap
+      end
+      if cap then chestCap[k] = cap end
     end
   end
 
@@ -297,8 +312,11 @@ function M.install(world)
   local function dropDir(dir, count)
     local it = inv[selected]
     if not it then return false, "No items to drop" end
-    local c = chestAt(dir)
+    local x, y, z = targetCoords(dir)
+    local k = key(x, y, z)
+    local c = chests[k]
     if not c then return false, "No inventory to drop into" end
+    if chestCap[k] and #c >= chestCap[k] then return false, "Chest is full" end
     local n = math.min(count or it.count, it.count)
     c[#c + 1] = { name = it.name, count = n }
     it.count = it.count - n
@@ -321,6 +339,141 @@ function M.install(world)
   function turtle.suck(c)     return suckDir("forward", c) end
   function turtle.suckUp(c)   return suckDir("up", c) end
   function turtle.suckDown(c) return suckDir("down", c) end
+
+  -- Crafting (crafty turtle) -------------------------------------------------
+  -- Faithful to tweaked.cc `turtle.craft`: the crafting grid is the top-left
+  -- 3x3 of the 4x4 inventory (slots 1,2,3 / 5,6,7 / 9,10,11); ALL other slots
+  -- must be empty; craft(0) validates a recipe without crafting; the count is
+  -- clamped to [0,64] and throwing outside it; the result lands in the selected
+  -- slot (then any free slot).
+  local CRAFT_GRID = { 1, 2, 3, 5, 6, 7, 9, 10, 11 }   -- row-major
+  local CRAFT_OUTSIDE = { 4, 8, 12, 13, 14, 15, 16 }
+
+  -- Recipe registry. Each recipe has an `output = {name=, count=}` plus either
+  --   shapeless = { ["item"] = nSlots, ... }  -- n grid slots each holding item
+  -- or
+  --   shaped    = { [1..9] = "item"|false }    -- row-major over CRAFT_GRID, normalized.
+  -- A built-in melon compression recipe (9 slices -> 1 block) ships so a bare
+  -- turtle can be exercised; worlds may add/override via `world.recipes`.
+  local recipes = {
+    { output = { name = "minecraft:melon", count = 1 },
+      shapeless = { ["minecraft:melon_slice"] = 9 } },
+  }
+  if world.recipes then
+    for _, r in ipairs(world.recipes) do recipes[#recipes + 1] = r end
+  end
+
+  local function gridCells()
+    local cells, byName, occupied = {}, {}, 0
+    for _, s in ipairs(CRAFT_GRID) do
+      local it = inv[s]
+      if it and it.count > 0 then
+        cells[#cells + 1] = { slot = s, name = it.name, count = it.count }
+        byName[it.name] = (byName[it.name] or 0) + 1
+        occupied = occupied + 1
+      end
+    end
+    return cells, byName, occupied
+  end
+
+  local function shapelessMatch(recipe, byName, occupied)
+    local sum = 0
+    for name, qty in pairs(recipe.shapeless) do
+      if (byName[name] or 0) ~= qty then return false end
+      sum = sum + qty
+    end
+    return sum == occupied              -- no extra ingredients in the grid
+  end
+
+  local function shapedMatch(recipe, cells)
+    -- current layout as a 3x3 (index r*3+c, r,c in 0..2) of item names
+    local slotRC, idx = {}, 1
+    for r = 0, 2 do for c = 0, 2 do slotRC[CRAFT_GRID[idx]] = r * 3 + c; idx = idx + 1 end end
+    local cur = {}
+    for _, cell in ipairs(cells) do cur[slotRC[cell.slot]] = cell.name end
+    local want = {}
+    for i = 1, 9 do if recipe.shaped[i] then want[i - 1] = recipe.shaped[i] end end
+    local function bbox(g)
+      local r0, c0, r1, c1 = 3, 3, -1, -1
+      for i = 0, 8 do if g[i] then local r, c = math.floor(i / 3), i % 3
+        r0 = math.min(r0, r); r1 = math.max(r1, r); c0 = math.min(c0, c); c1 = math.max(c1, c) end end
+      return r0, c0, r1, c1
+    end
+    local ar0, ac0, ar1, ac1 = bbox(cur)
+    local br0, bc0, br1, bc1 = bbox(want)
+    if ar1 < 0 or br1 < 0 then return false end
+    if (ar1 - ar0) ~= (br1 - br0) or (ac1 - ac0) ~= (bc1 - bc0) then return false end
+    for r = 0, ar1 - ar0 do for c = 0, ac1 - ac0 do
+      if cur[(ar0 + r) * 3 + (ac0 + c)] ~= want[(br0 + r) * 3 + (bc0 + c)] then return false end
+    end end
+    return true
+  end
+
+  local function findRecipe(cells, byName, occupied)
+    if occupied == 0 then return nil end
+    for _, r in ipairs(recipes) do
+      if r.shapeless and shapelessMatch(r, byName, occupied) then return r end
+      if r.shaped and shapedMatch(r, cells) then return r end
+    end
+    return nil
+  end
+
+  function turtle.craft(limit)
+    if limit == nil then limit = 64 end
+    if type(limit) ~= "number" then error("bad argument #1 to 'craft' (number expected, got " .. type(limit) .. ")", 2) end
+    limit = math.floor(limit)
+    if limit < 0 or limit > 64 then error("Crafting count " .. limit .. " out of range", 2) end
+    for _, s in ipairs(CRAFT_OUTSIDE) do
+      if inv[s] and inv[s].count > 0 then return false, "Items must not be placed outside the crafting grid" end
+    end
+    local cells, byName, occupied = gridCells()
+    local recipe = findRecipe(cells, byName, occupied)
+    if not recipe then return false, "No matching recipe" end
+    local maxCrafts = STACK
+    for _, cell in ipairs(cells) do if cell.count < maxCrafts then maxCrafts = cell.count end end
+    if limit == 0 then return true end            -- validate only, no craft
+    local n = math.min(maxCrafts, limit)
+    if n <= 0 then return false, "No matching recipe" end
+    for _, cell in ipairs(cells) do
+      inv[cell.slot].count = inv[cell.slot].count - n
+      if inv[cell.slot].count <= 0 then inv[cell.slot] = nil end
+    end
+    local out = recipe.output
+    local produced = n * (out.count or 1)
+    -- result lands in the selected slot first, then spills to any free/stackable slot
+    if not inv[selected] or inv[selected].name == out.name then
+      if not inv[selected] then inv[selected] = { name = out.name, count = 0 } end
+      local put = math.min(STACK - inv[selected].count, produced)
+      inv[selected].count = inv[selected].count + put
+      produced = produced - put
+    end
+    if produced > 0 then addItem(out.name, produced) end
+    return true
+  end
+
+  -- Op budget: every turtle.* call ticks a counter; exceeding the budget aborts
+  -- the program. Non-yielding infinite loops in the sandbox can't be preempted by
+  -- the host (the V8 execution-timeout and Lua debug hooks do NOT interrupt a hot
+  -- wasm loop), and any real turtle loop calls turtle.* every iteration — so this
+  -- bounds runtime deterministically and surfaces a clear "likely infinite loop"
+  -- error instead of hanging. Override per-world with `op_budget`.
+  local OP_BUDGET = tonumber(world.op_budget) or 2000000
+  do
+    local ops = 0
+    for name, fn in pairs(turtle) do
+      if type(fn) == "function" then
+        turtle[name] = function(...)
+          ops = ops + 1
+          if ops > OP_BUDGET then
+            error("turtle op budget exceeded (" .. OP_BUDGET ..
+              "): the program made too many turtle calls without finishing — it " ..
+              "likely has a loop that never terminates", 0)
+          end
+          return fn(...)
+        end
+      end
+    end
+  end
 
   turtle.native = turtle
 
