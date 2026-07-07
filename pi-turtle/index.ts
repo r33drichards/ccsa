@@ -18,7 +18,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { spawn } from "node:child_process";
-import { writeFileSync, existsSync } from "node:fs";
+import { writeFileSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
 const SIM_DIR = process.env.TURTLE_SIM_DIR || join(process.cwd(), "spike/melon-loop");
@@ -26,9 +26,9 @@ const PORT = process.env.TURTLE_PORT || "8790";
 
 interface SimResult { score: number; total: number; failures: string[]; raw: string; }
 
-function run(cmd: string, args: string[], cwd: string): Promise<{ code: number; stdout: string; stderr: string }> {
+function run(cmd: string, args: string[], cwd: string, timeout?: number): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
-    const child = spawn(cmd, args, { cwd });
+    const child = spawn(cmd, args, timeout ? { cwd, timeout, killSignal: "SIGTERM" } : { cwd });
     let stdout = "", stderr = "";
     child.stdout.on("data", (d) => (stdout += d.toString()));
     child.stderr.on("data", (d) => (stderr += d.toString()));
@@ -380,6 +380,39 @@ export default function piTurtle(pi: ExtensionAPI) {
           details: { error: "gh_failed", code: r.code } };
       }
       return { content: [{ type: "text" as const, text: `Published: ${url}` }], details: { url } };
+    },
+  });
+
+  (pi.registerTool as (t: unknown) => unknown)({
+    name: "solve",
+    label: "Solve (dispatch researcher)",
+    description:
+      "Dispatch the auto-researcher — a SEPARATE glm-5.2 sub-agent restricted to turtle_sim — " +
+      "to write a turtle program that passes the CURRENT arena (already created with create_sim/" +
+      "create_sort_sim). It iterates on its own until every invariant passes. Returns whether it " +
+      "passed, the best score, and the final program. Call this after building the arena; do not " +
+      "write turtle code yourself.",
+    promptSnippet: "Dispatch the glm researcher to solve the current arena; returns pass/score/program.",
+    parameters: Type.Object({
+      task: Type.String({ description: "One-line description of the turtle to build (guides the researcher)." }),
+    }),
+    async execute(_id: string, params: { task: string }) {
+      const repo = process.cwd();
+      const prompt =
+        `Solve the arena defined in spike/melon-loop/spec.yaml. Task: ${params.task}. ` +
+        `Read the relevant languages/skills/turtle-* skill for the algorithm, then write ONE complete ` +
+        `Lua program and submit it with turtle_sim. If any check fails, fix and resubmit until failed=0. ` +
+        `Act promptly; submit a first attempt without lengthy deliberation.`;
+      const r = await run("bash", ["pi-turtle/pilot.sh", "--restricted", "--json", "-p", prompt], repo, 20 * 60 * 1000);
+      const scores = [...r.stdout.matchAll(/"score":(\d+),"total":(\d+)/g)].map((m) => [parseInt(m[1], 10), parseInt(m[2], 10)] as [number, number]);
+      const best = scores.reduce((b, s) => (s[0] > b[0] ? s : b), [0, 0] as [number, number]);
+      const passed = scores.some(([s, t]) => t > 0 && s === t);
+      const progPath = join(SIM_DIR, "prog.lua");
+      const program = existsSync(progPath) ? readFileSync(progPath, "utf8") : "";
+      const text = passed
+        ? `Researcher PASSED: ${best[0]}/${best[1]}. The working program is in prog.lua (${program.split("\n").length} lines). You can publish_gist it.`
+        : `Researcher did NOT fully pass (best ${best[0]}/${best[1]} over ${scores.length} attempts). You may adjust the arena or call solve again.`;
+      return { content: [{ type: "text" as const, text }], details: { passed, score: best[0], total: best[1], attempts: scores.length } };
     },
   });
 }
