@@ -18,7 +18,7 @@ const { openSandbox, turtleSim, checkCompleted, runJs } = proxyActivities<typeof
 // don't burn 6 attempts.
 const { callLlm, compact } = proxyActivities<typeof acts>({
   startToCloseTimeout: "15 minutes",
-  retry: { maximumAttempts: 3, initialInterval: "3 seconds", maximumInterval: "20 seconds" },
+  retry: { maximumAttempts: 5, initialInterval: "3 seconds", maximumInterval: "30 seconds" },
 });
 
 const TOOLS_SCHEMA_TOK = toolsSchemaTok(TOOLS); // static tool-schema token cost, for the gate
@@ -70,12 +70,11 @@ export async function researchWorkflow(input: ResearchInput, state?: LoopState):
       s.messages = r.messages; s.summary = r.summary; s.tokens += r.tokens;
     }
 
-    // A retry-exhausted activity must NOT hard-FAIL the whole research: end gracefully and
-    // return the best attempt (research_status then reports type:error with prog.lua metadata).
-    let a: acts.LlmOut;
-    try {
-      a = await callLlm({ messages: sendView(s.messages, s.summary), tools: TOOLS, model });
-    } catch { break; } // e.g. glm timeout after retries -> stop, return best-so-far
+    // callLlm failing after its retries means the LLM is unreachable (e.g. a network
+    // "fetch failed" to Ollama) — a real infra failure, NOT a "did not pass" result. Let it
+    // propagate so the workflow reports FAILED, instead of masking it as an empty best attempt.
+    // (Budget/step exhaustion is the legitimate graceful path — see the while-condition + done().)
+    const a: acts.LlmOut = await callLlm({ messages: sendView(s.messages, s.summary), tools: TOOLS, model });
     s.tokens += a.tokens;
 
     s.messages.push(a.toolCalls.length
