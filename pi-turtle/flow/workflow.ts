@@ -161,20 +161,18 @@ export async function researchWorkflow(input: ResearchInput, state?: LoopState):
       s.messages.push({ role: "tool", tool_call_id: tc.id, content: obs });
     }
 
-    if (s.best.passed) return done(); // turtle_sim just passed every invariant
-
-    // validator-in-the-loop gate: run the DETERMINISTIC validator ONLY when the agent took no
-    // action this turn (i.e. it is trying to conclude). It cannot self-declare done — if
-    // /work/prog.lua doesn't pass, inject the verdict and keep looping. We deliberately do NOT
-    // run it on active turns (turtle_sim already validated; run_js is exploration), so it no
-    // longer fires on every exploration turn.
+    // Completion runs SOLELY through the finish signal (mini-swe has_finished pattern): the
+    // DETERMINISTIC validator is called ONLY when the agent takes no action this turn (it is
+    // signalling done). turtle_sim and run_js are just the agent's work tools and never
+    // terminate the loop themselves — so validation never fires mid-work. On the finish signal:
+    // pass -> Submitted (done); fail -> inject the verdict and keep stepping (NonTerminating).
     if (a.toolCalls.length === 0) {
       try {
         const chk = await checkCompleted({ workSession, envs: input.envs });
         if (chk.score > s.best.score) s.best = { program: chk.program || s.best.program, score: chk.score, total: chk.total, passed: chk.complete };
         s.best.passed = s.best.passed || chk.complete;
         if (chk.complete) return done();
-        s.messages.push({ role: "user", content: chk.feedback + " You are not done — write or refine your Lua program and test it with turtle_sim." });
+        s.messages.push({ role: "user", content: chk.feedback + " You are NOT finished — fix the program, test it with turtle_sim, and only stop once every invariant passes." });
       } catch { /* validator env error -> keep going */ }
     }
 

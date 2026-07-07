@@ -99,8 +99,11 @@ export function buildSystemPrompt(task: string, envs: Env[], arenaYaml: string):
       `TASK: ${task}\n\n` +
       "Write a CC:Tweaked Lua turtle program that makes every invariant below pass. Explore the engine and " +
       "skills with run_js as much as helps — but converge: submit real attempts with turtle_sim and iterate on " +
-      "the failing invariants until it reports 0 failed. Declaring success without a passing turtle_sim does " +
-      "nothing.\n\n" +
+      "the failing invariants until it reports 0 failed.\n" +
+      "FINISH PROTOCOL: when turtle_sim reports 0 failed, you are passing — reply with a brief confirmation and " +
+      "NO tool call. That is your 'done' signal; a final deterministic validation then submits your program. If " +
+      "that validation still finds a failing invariant, you will be told and must keep fixing. Do not stop while " +
+      "any invariant is failing.\n\n" +
       "FAIL OPEN ON A NIL `sim` (the program must run on a REAL turtle too): the `sim` global (sim.pos, " +
       "sim.chest, sim.assert*, setpos, ...) exists ONLY in this simulator; on a real device it is nil and any " +
       "unguarded `sim.xxx()` throws. Never touch `sim.*` unguarded — get real inputs from gps/inspect/" +
