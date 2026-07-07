@@ -433,6 +433,30 @@ function M.install(world)
     return true
   end
 
+  -- Op budget: every turtle.* call ticks a counter; exceeding the budget aborts
+  -- the program. Non-yielding infinite loops in the sandbox can't be preempted by
+  -- the host (the V8 execution-timeout and Lua debug hooks do NOT interrupt a hot
+  -- wasm loop), and any real turtle loop calls turtle.* every iteration — so this
+  -- bounds runtime deterministically and surfaces a clear "likely infinite loop"
+  -- error instead of hanging. Override per-world with `op_budget`.
+  local OP_BUDGET = tonumber(world.op_budget) or 2000000
+  do
+    local ops = 0
+    for name, fn in pairs(turtle) do
+      if type(fn) == "function" then
+        turtle[name] = function(...)
+          ops = ops + 1
+          if ops > OP_BUDGET then
+            error("turtle op budget exceeded (" .. OP_BUDGET ..
+              "): the program made too many turtle calls without finishing — it " ..
+              "likely has a loop that never terminates", 0)
+          end
+          return fn(...)
+        end
+      end
+    end
+  end
+
   turtle.native = turtle
 
   -- The sim introspection / assertion API -----------------------------------

@@ -1,0 +1,8 @@
+{
+  "name": "pi-turtle",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pi package: make CC:Tweaked turtle programs by autoresearching against the craftos sim",
+  "pi": { "extensions": ["./index.ts"] },
+  "dependencies": { "typebox": "^1.1.24" }
+}

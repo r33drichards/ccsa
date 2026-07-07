@@ -12,3 +12,9 @@ bin/*.gz
 .DS_Store
 **/.DS_Store
 logs/
+# pi-turtle: npm deps + pi runtime/generated config (keep models.json + system.md)
+pi-turtle/node_modules/
+pi-turtle/agent/auth.json
+pi-turtle/agent/settings.json
+pi-turtle/agent/sessions/
+pi-turtle/agent/bin/

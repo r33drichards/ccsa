@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "languages": {
+      "url": "http://127.0.0.1:8790/mcp",
+      "directTools": ["run_js"]
+    }
+  },
+  "settings": {
+    "toolPrefix": "none",
+    "disableProxyTool": true
+  }
+}
