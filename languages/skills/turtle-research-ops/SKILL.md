@@ -74,9 +74,13 @@ curl -s -X POST "$MCP" -H 'Content-Type: application/json' -H 'Accept: applicati
 
 - **`callLlm` TimeoutError / workflow FAILED on a hard task** — the transcript grew until glm's
   completion exceeded the timeout; retries with the same context just time out again.
-  *Fixed* by `pruneMessages` (bounded context) + graceful degradation (a retry-exhausted
-  `callLlm` returns best-so-far instead of failing) + a 6-min `callLlm` budget. If it recurs,
-  lower `KEEP_TAIL` / raise the budget in `workflow.ts`.
+  *Fixed* by **rolling-summary compaction** bound to glm-5.2's 976K window (`compactIfNeeded` in
+  `workflow.ts`: a deterministic char-based token estimate triggers at `COMPACT_THRESHOLD`, evicts
+  the middle on whole `assistant(tool_calls)+tool` group boundaries into a structured running
+  summary via the `summarize` activity, and keeps a verbatim tail) + graceful degradation (a
+  retry-exhausted `callLlm` returns best-so-far instead of failing) + a 6-min `callLlm` budget.
+  Tuning knobs in `workflow.ts`: `WORKING_CAP`, `COMPACT_THRESHOLD`/`COMPACT_TARGET`,
+  `TAIL_TOKEN_BUDGET`, `MIN_TAIL_GROUPS`. If glm-5.2's tag/window changes, update `MODEL_WINDOW`.
 - **Activities stuck PENDING (never start)** — no worker polling `turtle`. The worker runs in
   the `app` container; `start.sh` **exits the container if any of sim/worker/MCP dies** so
   Railway restarts a fresh worker. Check `app` deploy logs for a crash loop; confirm the

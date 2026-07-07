@@ -53,6 +53,67 @@ export async function callLlm(input: { messages: unknown[]; tools: unknown[]; mo
   };
 }
 
+// ── compaction: the rolling-summary LLM activity ────────────────────────────
+// Folds the evicted middle of the transcript into one progressive, structured record
+// so the agent never forgets which invariants failed or which approaches it already
+// tried+rejected. Non-deterministic (LLM), so it lives here as an activity; Temporal
+// records the returned string, keeping workflow replay deterministic.
+const SUMMARIZER_SYSTEM =
+`You are the memory compactor for an autonomous agent that writes and debugs CC:Tweaked (Minecraft ComputerCraft) turtle Lua programs. Your ONLY job is to maintain a compact, LOSSLESS-ON-KEY-FACTS record of everything the agent has already tried, so it never repeats a failed approach or forgets which invariants are still failing. You are NOT solving the task and NOT writing Lua. You output ONLY the updated record in the exact template below — no preamble, no commentary.
+
+Absolute rules:
+- COPY VERBATIM, never paraphrase: invariant names, the exact "... FAIL ..." / "ok" lines from turtle_sim output, error strings, and any Lua you decide to retain. Paraphrasing a failing-invariant name or a coordinate destroys the record's only value.
+- Carry forward every fact from PRIOR RECORD unless the NEW MESSAGES clearly supersede it (e.g. an invariant that was failing is now passing). Never silently drop a tried-and-rejected approach.
+- If an approach appears in NEW MESSAGES, add it to APPROACHES TRIED with the specific reason it failed (which invariant(s) it broke). Deduplicate against approaches already listed.
+- Keep the CURRENT BEST PROGRAM as the full Lua of the highest-scoring attempt seen so far (prior record vs. new messages — keep whichever scored higher). If unchanged, keep the prior one.
+- Be terse everywhere EXCEPT the verbatim fields above. Target under ~600 words excluding the CURRENT BEST PROGRAM code block.
+
+TEMPLATE (emit all headers, fill every field, keep this order):
+GOAL: <one or two sentences, from the task>
+HARD INVARIANTS: <comma-separated invariant names, verbatim>
+INVARIANTS STILL FAILING:
+- <invariant name> — <exact FAIL line from the most recent sim that failed it>
+(list every currently-failing invariant; write "none known failing" if all seen passing)
+APPROACHES TRIED & WHY REJECTED:
+- <one line: what was tried> — broke: <invariant name(s)> / <error string, verbatim>
+CURRENT BEST: score <x>/<total>
+CURRENT BEST PROGRAM:
+\`\`\`lua
+<full Lua of the best attempt, verbatim, or the single line: (kept verbatim in recent tail)>
+\`\`\`
+NEXT-STEP HYPOTHESES: <bullet list of untried ideas / suspected root causes>`;
+
+// render an OpenAI-shape message compactly for the summarizer's input
+function renderMessages(msgs: any[]): string {
+  return msgs.map((m) => {
+    const parts: string[] = [String(m.role) + ":"];
+    if (m.content) parts.push(String(m.content));
+    if (Array.isArray(m.tool_calls) && m.tool_calls.length)
+      parts.push("[tool_calls] " + m.tool_calls.map((tc: any) => `${tc.function?.name}(${tc.function?.arguments})`).join("; "));
+    return parts.join(" ");
+  }).join("\n\n");
+}
+
+export async function summarize(input: { oldSummary: string; evicted: any[]; task: string }): Promise<{ summary: string }> {
+  const key = process.env.OLLAMA_API_KEY;
+  if (!key) throw new Error("OLLAMA_API_KEY not set");
+  const model = process.env.TURTLEFLOW_MODEL || "glm-5.2";
+  const user =
+    `PRIOR RECORD (may be empty on first compaction):\n<<<\n${input.oldSummary}\n>>>\n\n` +
+    `TASK (first user message, for GOAL/invariants grounding):\n<<<\n${input.task}\n>>>\n\n` +
+    `NEW MESSAGES being compacted (oldest agent turns being evicted from live context; assistant text, tool_calls with their Lua/JS arguments, and turtle_sim / run_js tool results):\n<<<\n${renderMessages(input.evicted)}\n>>>\n\n` +
+    `Output the updated record now, template only.`;
+  const r = await fetch(`${OLLAMA_BASE}/chat/completions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+    body: JSON.stringify({ model, temperature: 0, messages: [{ role: "system", content: SUMMARIZER_SYSTEM }, { role: "user", content: user }] }),
+    signal: AbortSignal.timeout(300000),
+  });
+  if (!r.ok) throw new Error(`summarize ${r.status}: ${(await r.text()).slice(0, 300)}`);
+  const j: any = await r.json();
+  return { summary: (j.choices?.[0]?.message?.content ?? "").trim() };
+}
+
 export type SimObs = SimResult & { observation: string };
 
 function observe(res: SimResult): string {
