@@ -1,0 +1,79 @@
+name: craftos-mcp image
+
+# Builds the craftos-mcp Docker image with pure nix (pkgs.dockerTools) and
+# publishes it to GHCR. This is independent of the upstream CraftOS-PC GUI
+# workflows (main.yml / release.yml).
+
+on:
+  push:
+    tags:
+      - "mcp-v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag to publish (defaults to 'manual-<run_number>')"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-push:
+    name: Build & push craftos-mcp image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Determine version tag
+        id: ver
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            # mcp-v0.0.1-rc1 -> 0.0.1-rc1
+            VERSION="${GITHUB_REF_NAME#mcp-v}"
+          elif [ -n "${{ github.event.inputs.tag }}" ]; then
+            VERSION="${{ github.event.inputs.tag }}"
+          else
+            VERSION="manual-${GITHUB_RUN_NUMBER}"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Publishing version: ${VERSION}"
+
+      - name: Build image (nix dockerTools)
+        run: |
+          nix build .#packages.x86_64-linux.docker -L --print-out-paths > image-path.txt
+          cat image-path.txt
+
+      - name: Load image into Docker
+        id: load
+        run: |
+          IMAGE_TAR="$(cat image-path.txt)"
+          LOADED="$(docker load -i "$IMAGE_TAR" | sed -n 's/^Loaded image: //p' | head -n1)"
+          echo "Loaded: ${LOADED}"
+          echo "local_ref=${LOADED}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag & push
+        env:
+          LOCAL_REF: ${{ steps.load.outputs.local_ref }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          REPO="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/craftos-mcp"
+          docker tag "$LOCAL_REF" "${REPO}:${VERSION}"
+          docker tag "$LOCAL_REF" "${REPO}:latest"
+          docker push "${REPO}:${VERSION}"
+          docker push "${REPO}:latest"
+          echo "Pushed ${REPO}:${VERSION} and ${REPO}:latest"

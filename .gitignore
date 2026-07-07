@@ -1,0 +1,58 @@
+obj*
+craftos
+/.vs
+/Debug
+/packages
+x86
+x64
+ARM64
+CraftOS-PC*.app
+/autoscan.log
+/Makefile - Copy
+/autom4te.cache
+/CraftOS-PC
+/CraftOS-PC-CCT-Edition
+/CraftOS-PC.xcodeproj
+/ccemux.*
+.vscode/c_cpp_properties.json
+codesign
+CraftOS-PC 2.code-workspace
+Makefile
+config.log
+config.status
+CraftOS-PC*.dmg
+.DS_Store
+example_peripheral.dylib
+craftos.html*
+craftos.wa*
+craftos.*js
+CraftOS-PC.html
+*.dSYM
+/src/lua51.lib
+a.out*
+*.mem
+index.html
+*.obj
+*.exe
+raw_frame_reader
+src/fs_standalone.cpp
+*.vcxproj.user
+*.aps
+include_arm
+vcpkg_installed
+/ignored.txt
+/src/apikey.cpp
+*.dylib
+*.so
+*.bundle
+# turtle-sim local runtime data
+/.craftos-data/
+
+# embedded build artifacts
+/embed/libcraftos2.a
+/embed/*.o
+/embed/gps_test
+/result/
+
+# rust build
+/mcp/target/
