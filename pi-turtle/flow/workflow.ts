@@ -172,6 +172,9 @@ export async function researchWorkflow(input: ResearchInput, state?: LoopState):
         if (chk.score > s.best.score) s.best = { program: chk.program || s.best.program, score: chk.score, total: chk.total, passed: chk.complete };
         s.best.passed = s.best.passed || chk.complete;
         s.messages.push({ role: "user", content: chk.feedback });
+        // anti-rabbit-hole: if it keeps exploring (run_js / no tool) without ever submitting, force it
+        if (s.attempts === 0 && s.step >= 1)
+          s.messages.push({ role: "user", content: `⚠ You have taken ${s.step + 1} turns and called turtle_sim 0 times — you are exploring instead of building. STOP calling run_js. The reference skills in the system prompt are sufficient. On THIS turn, write your COMPLETE Lua turtle program and submit it with turtle_sim.` });
         if (chk.complete) return done();
       } catch { /* validator env error -> skip this turn's gate, keep going */ }
     } else if (s.best.passed) {

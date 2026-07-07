@@ -83,26 +83,25 @@ export function buildSystemPrompt(task: string, envs: Env[], arenaYaml: string):
   const parts = [
     SYSTEM,
     "\n\n=== TOOLS ===\n" +
-      "- turtle_sim(program): run your COMPLETE Lua turtle program against EVERY arena environment and get " +
-      "back the per-invariant ok/FAIL log. This is the authority: you are done ONLY when it reports all pass " +
-      "(0 failed). Submit the whole program each call; iterate on the failures.\n" +
-      "- run_js(code): evaluate JavaScript in the languages sandbox to inspect state or run the craftos engine " +
-      "yourself. A FRESH V8 isolate each call, but /work PERSISTS and is fully isolated (no host disk). It has " +
-      "the craftos engine and the full skills tree. run_js returns ONLY what you console.log(...).\n" +
-      "  ⚠ CRITICAL: `fs`, `craftos`, and `picat` are READY-MADE GLOBALS — reference them directly (await " +
-      "fs.readFile(path,'utf8'), await fs.writeFile(...), await fs.readdir(...), await craftos({...})). This " +
-      "sandbox has NO module system: NEVER write require('fs') and NEVER write import ... from 'fs' — require and " +
-      "import are DISABLED and throw (you'll get 'require is not defined' / a module error and waste the turn). " +
-      "Just use the globals.\n" +
-      `  Load the engine and call it in the SAME block, e.g.:\n  (0,eval)(await fs.readFile(${JSON.stringify(WORK_BOOTSTRAP)},'utf8'));\n` +
-      "  const out = await craftos({ nodes:[{ label:'c1', collect:true, world_lua:'...', program:'...' }] });\n" +
-      "  console.log(JSON.stringify(out));\n" +
-      `The bootstrap is ${WORK_BOOTSTRAP}; the full SKILL.md tree is under ${WORK_SKILLS} — read any of it on ` +
-      `demand with run_js: console.log(await fs.readFile(${JSON.stringify(WORK_SKILLS + "/cc-tweaked/SKILL.md")}, 'utf8')).\n`,
+      "- turtle_sim(program) — YOUR PRIMARY ACTION, use it almost every turn. Submit your COMPLETE Lua turtle " +
+      "program; it writes /work/prog.lua, runs it against EVERY arena environment, and returns the per-invariant " +
+      "ok/FAIL log. You are done ONLY when it reports 0 failed. SUBMIT A FIRST ATTEMPT ON YOUR VERY FIRST TURN — " +
+      "the reference skills below are already enough to start; iterate from the REAL failures it reports rather " +
+      "than trying to perfect the program up front.\n" +
+      "- run_js(code) — OPTIONAL and secondary; you will rarely need it. Evaluate JS in the sandbox (fresh V8 " +
+      "each call; /work persists) ONLY to inspect something you genuinely cannot infer from the skills below. Do " +
+      "NOT spend multiple turns exploring or reading files — the skills you need are inlined in this prompt, so " +
+      "you should almost never call run_js before your first turtle_sim submission.\n" +
+      "  ⚠ In run_js, `fs`, `craftos`, `picat` are READY-MADE GLOBALS — use them directly (await fs.readFile(" +
+      "path,'utf8'), await craftos({...})). NO module system: require('fs') and import are DISABLED and throw. " +
+      `To run the engine yourself: (0,eval)(await fs.readFile(${JSON.stringify(WORK_BOOTSTRAP)},'utf8')); const ` +
+      "out = await craftos({ nodes:[{ label:'c1', collect:true, world_lua:'...', program:'...' }] }); " +
+      "console.log(JSON.stringify(out)).\n",
     "\n=== YOUR JOB ===\n" +
       `TASK: ${task}\n\n` +
-      "Write a single CC:Tweaked Lua turtle program that makes every invariant below pass. Iterate with " +
-      "turtle_sim until it reports 0 failed. Declaring success without a passing turtle_sim does nothing.\n\n" +
+      "On your FIRST turn, write a complete first-draft CC:Tweaked Lua turtle program and call turtle_sim with " +
+      "it — do NOT read files or explore the sandbox first. Then iterate with turtle_sim until it reports 0 " +
+      "failed. Declaring success without a passing turtle_sim does nothing.\n\n" +
       "FAIL OPEN ON A NIL `sim` (the program must run on a REAL turtle too): the `sim` global (sim.pos, " +
       "sim.chest, sim.assert*, setpos, ...) exists ONLY in this simulator; on a real device it is nil and any " +
       "unguarded `sim.xxx()` throws. Never touch `sim.*` unguarded — get real inputs from gps/inspect/" +
