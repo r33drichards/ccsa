@@ -74,12 +74,20 @@ buffered text — reliable for logs/CI. Each `turtle_sim` result arrives as a
 
 | command | tools the agent has |
 |---|---|
-| `./pi-turtle/pilot.sh` | `turtle_sim`, `publish_gist` + read, edit, write, bash |
+| `./pi-turtle/pilot.sh` | `create_sim`, `turtle_sim`, `publish_gist` + read, edit, write, bash |
 | `./pi-turtle/pilot.sh --restricted` | `turtle_sim` only (sandbox) |
 
-When a program passes, ask the agent to **publish** it — in full mode it calls
-`publish_gist`, which uploads `prog.lua` + `spec.yaml` to a GitHub gist (via `gh`,
-which must be authenticated) and returns the URL.
+The full-mode agent runs the whole flow from a plain-English request:
+
+1. **`create_sim`** — turns "compress iron nuggets into ingots (9→1)" into a fresh
+   `spec.yaml` (chests + recipe + auto-derived pass/leftover/empty checks). Works
+   for **any** input→craft→output compression turtle, not just melons.
+2. **`turtle_sim`** — iterate the program until every check passes.
+3. **`publish_gist`** — upload `prog.lua` + `spec.yaml` to a GitHub gist (via `gh`,
+   which must be authenticated) and return the URL.
+
+Example prompt: *"Make a turtle that compresses `minecraft:iron_nugget` into
+`minecraft:iron_ingot` (9→1), then publish it."*
 
 Both load this repo's CC:Tweaked skills (`cc-tweaked` API reference,
 `craftos-sim`, `turtle-crafter-compressor`, …) so the agent knows the API and
@@ -107,7 +115,8 @@ proven patterns, and neither loads your global pi skills or `~/AGENTS.md`.
   compressor (`spike/melon-loop/spec.yaml`). Authoring a *new* sim from chat
   (the orchestrator phase) isn't built yet.
 
-## What's not built yet
+## Scope
 
-- **Orchestrator** to co-author a brand-new sim/test from chat (today the sim is
-  the fixed melon-compressor).
+The generated sims cover **input → craft → output compression turtles** (any
+item, any ratio, chest above or below). Other turtle shapes (mining, movement,
+multi-step processing) would need new sim generators.
