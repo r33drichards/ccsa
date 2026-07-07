@@ -11,14 +11,13 @@ import { estTokens, sendView, COMPACT_THRESHOLD, toolsSchemaTok } from "./compac
 import type { Env } from "./arena-object.ts";
 
 const { openSandbox, turtleSim, checkCompleted, runJs } = proxyActivities<typeof acts>({
-  startToCloseTimeout: "5 minutes",
+  startToCloseTimeout: "15 minutes",
   retry: { maximumAttempts: 6, initialInterval: "2 seconds", maximumInterval: "30 seconds" },
 });
-// callLlm + compact get a longer budget (glm can be slow on larger contexts, and compact makes
-// one or more summarize calls) and fewer retries — a retry with the SAME context just times out
-// again, so don't burn 6 attempts.
+// callLlm + compact use fewer retries — a retry with the SAME context just times out again, so
+// don't burn 6 attempts.
 const { callLlm, compact } = proxyActivities<typeof acts>({
-  startToCloseTimeout: "6 minutes",
+  startToCloseTimeout: "15 minutes",
   retry: { maximumAttempts: 3, initialInterval: "3 seconds", maximumInterval: "20 seconds" },
 });
 
@@ -39,7 +38,7 @@ function needsCompaction(s: LoopState): boolean {
 
 export async function researchWorkflow(input: ResearchInput, state?: LoopState): Promise<ResearchResult> {
   const model = input.model || "glm-5.2";
-  const maxSteps = input.maxSteps ?? 60;
+  const maxSteps = input.maxSteps ?? 120;
   const workSession = workflowInfo().workflowId; // stable across continue-as-new -> same /work
 
   let s: LoopState = state ?? {

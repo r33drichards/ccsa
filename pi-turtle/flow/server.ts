@@ -125,7 +125,7 @@ function buildServer(): McpServer {
     const arena = arenaYaml(task, environments, timeoutMs ?? 60000);
     const systemPrompt = buildSystemPrompt(task, environments, arena);
     const workflowId = "turtle-" + Math.random().toString(36).slice(2, 10);
-    await client.workflow.start("researchWorkflow", { args: [{ task, envs: environments, systemPrompt, maxSteps, maxTokens }], taskQueue, workflowId });
+    await client.workflow.start("researchWorkflow", { args: [{ task, envs: environments, systemPrompt, maxSteps, maxTokens }], taskQueue, workflowId, workflowExecutionTimeout: "6 hours" });
     const body = { workflowId, ui: `${uiBase}/namespaces/default/workflows/${workflowId}`, environments: environments.length };
     return { content: [{ type: "text" as const, text: JSON.stringify(body) }], structuredContent: body };
   });
