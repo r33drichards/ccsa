@@ -182,9 +182,19 @@ function luaStacks(stacks: Stack[]): string {
   return stacks.map(([n, c]) => `{ name = '${n}', count = ${c} }`).join(", ");
 }
 
+// A chest is either plain stacks, or a DOUBLE chest (two adjacent blocks sharing
+// one inventory) declared with the second half's coords.
+type ChestSpec = Stack[] | { stacks: Stack[]; double: [number, number, number] };
+const stacksOf = (c: ChestSpec): Stack[] => (Array.isArray(c) ? c : c.stacks);
+function chestLuaFor(dir: string, c: ChestSpec): string {
+  const at = SORT_DIRS[dir].join(",");
+  if (Array.isArray(c)) return `['${at}'] = { ${luaStacks(c)} }`;
+  return `['${at}'] = { items = { ${luaStacks(c.stacks)} }, double = '${c.double.join(",")}' }`;
+}
+
 function genSortSpec(): { yaml: string } {
   // Environments: each maps a direction -> messy chest contents.
-  const envs: { note: string; chests: Record<string, Stack[]> }[] = [
+  const envs: { note: string; chests: Record<string, ChestSpec> }[] = [
     {
       note: "fragmented + unsorted",
       chests: {
@@ -201,13 +211,27 @@ function genSortSpec(): { yaml: string } {
         front: [],
       },
     },
+    {
+      note: "DOUBLE chest in front (two blocks, one 54-slot inventory), heavily fragmented",
+      chests: {
+        up: [["minecraft:dirt", 20], ["minecraft:dirt", 40]],
+        down: [],
+        front: {
+          double: [8, 64, 10],
+          stacks: [
+            ["minecraft:cobblestone", 40], ["minecraft:dirt", 15], ["minecraft:cobblestone", 64],
+            ["minecraft:coal", 30], ["minecraft:dirt", 25], ["minecraft:cobblestone", 30],
+            ["minecraft:coal", 12], ["minecraft:dirt", 50], ["minecraft:cobblestone", 20],
+          ],
+        },
+      },
+    },
   ];
 
-  const node = (i: number, env: { note: string; chests: Record<string, Stack[]> }) => {
-    const chestLua = Object.entries(env.chests)
-      .map(([dir, stacks]) => `['${SORT_DIRS[dir].join(",")}'] = { ${luaStacks(stacks)} }`).join(", ");
+  const node = (i: number, env: { note: string; chests: Record<string, ChestSpec> }) => {
+    const chestLua = Object.entries(env.chests).map(([dir, c]) => chestLuaFor(dir, c)).join(", ");
     const checks = Object.entries(env.chests)
-      .map(([dir, stacks]) => `            check(${SORT_DIRS[dir].join(", ")}, ${luaExpected(mergedCounts(stacks))})`).join("\n");
+      .map(([dir, c]) => `            check(${SORT_DIRS[dir].join(", ")}, ${luaExpected(mergedCounts(stacksOf(c)))})`).join("\n");
     return `    - label: sort_env_${i}
       collect: true
       program: "@file:prog.lua"
@@ -269,12 +293,13 @@ export default function piTurtle(pi: ExtensionAPI) {
       writeFileSync(join(SIM_DIR, "spec.yaml"), g.yaml);
       return {
         content: [{ type: "text" as const, text:
-          "Sort arena created: 2 environments with adjacent chests (above, below, front) of " +
-          "fragmented/unsorted items. For each chest, invariants check conservation, " +
-          "consolidation (same items merged to ceil(count/64) stacks), and slots ordered by " +
-          "item name. Write ONE turtle program and iterate with turtle_sim until it passes " +
-          "every check — it must sort each chest in place and handle empty chests." }],
-        details: { environments: 2 },
+          "Sort arena created: 3 environments with adjacent chests (above, below, front) of " +
+          "fragmented/unsorted items — including a DOUBLE chest (two blocks, one 54-slot " +
+          "inventory) in front. For each chest, invariants check conservation, consolidation " +
+          "(same items merged to ceil(count/64) stacks), and slots ordered by item name. Write " +
+          "ONE turtle program and iterate with turtle_sim until it passes every check — it must " +
+          "sort each chest in place, handle empty chests, and treat a double chest as one inventory." }],
+        details: { environments: 3 },
       };
     },
   });

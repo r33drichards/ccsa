@@ -74,13 +74,28 @@ function M.install(world)
   local overrides = {}
   local initialBlocks = world.blocks or {}
 
-  -- Chest containers: key -> array of {name,count} slots.
-  local chests = {}
+  -- Chest containers: key -> array of {name,count} slots. `chestCap[key]` is an
+  -- optional max slot count (nil = unbounded, as before).
+  --   plain form:  chests = { ["x,y,z"] = { "minecraft:coal", {name=,count=} } }
+  --   config form: chests = { ["x,y,z"] = { items = {...}, double = "x,y,z", capacity = N } }
+  -- A `double` links two adjacent blocks to ONE shared inventory (a double chest,
+  -- 54 slots by default); the turtle can suck/drop from either half.
+  local chests, chestCap = {}, {}
   if world.chests then
-    for k, list in pairs(world.chests) do
+    for k, spec in pairs(world.chests) do
+      local items, dbl, cap = spec, nil, nil
+      if spec.items ~= nil or spec.double ~= nil or spec.capacity ~= nil then
+        items, dbl, cap = spec.items or {}, spec.double, spec.capacity
+      end
       local slots = {}
-      for _, it in ipairs(list) do slots[#slots + 1] = normName(it) end
+      for _, it in ipairs(items) do slots[#slots + 1] = normName(it) end
       chests[k] = slots
+      if dbl then
+        chests[dbl] = slots               -- both halves share one inventory
+        cap = cap or 54
+        chestCap[dbl] = cap
+      end
+      if cap then chestCap[k] = cap end
     end
   end
 
@@ -297,8 +312,11 @@ function M.install(world)
   local function dropDir(dir, count)
     local it = inv[selected]
     if not it then return false, "No items to drop" end
-    local c = chestAt(dir)
+    local x, y, z = targetCoords(dir)
+    local k = key(x, y, z)
+    local c = chests[k]
     if not c then return false, "No inventory to drop into" end
+    if chestCap[k] and #c >= chestCap[k] then return false, "Chest is full" end
     local n = math.min(count or it.count, it.count)
     c[#c + 1] = { name = it.name, count = n }
     it.count = it.count - n
