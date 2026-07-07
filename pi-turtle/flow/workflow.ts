@@ -137,8 +137,8 @@ export async function researchWorkflow(input: ResearchInput, state?: LoopState):
       ? { role: "assistant", content: a.content, tool_calls: a.toolCalls.map((tc) => ({ id: tc.id, type: "function", function: { name: tc.name, arguments: tc.arguments } })) }
       : { role: "assistant", content: a.content });
 
-    // dispatch each tool_call as an activity (mutation with tools)
-    let ranValidatorFresh = false;
+    // dispatch each tool_call as an activity. turtle_sim self-validates (writes+runs the program);
+    // run_js is legitimate exploration/inspection of the sandbox and engine.
     for (const tc of a.toolCalls) {
       let args: any = {};
       try { args = JSON.parse(tc.arguments || "{}"); } catch { /* malformed -> empty */ }
@@ -149,7 +149,6 @@ export async function researchWorkflow(input: ResearchInput, state?: LoopState):
           const program = String(args.program ?? "");
           const r = await turtleSim({ workSession, program, envs: input.envs });
           obs = r.observation;
-          ranValidatorFresh = true; // turtle_sim ran the deterministic validator on /work/prog.lua this turn
           if (r.score > s.best.score) s.best = { program, score: r.score, total: r.total, passed: r.passed };
         } else if (tc.name === "run_js") {
           obs = (await runJs({ workSession, code: String(args.code ?? "") })).text || "(no output)";
@@ -162,27 +161,33 @@ export async function researchWorkflow(input: ResearchInput, state?: LoopState):
       s.messages.push({ role: "tool", tool_call_id: tc.id, content: obs });
     }
 
-    // validator-in-the-loop (check_completed): the DETERMINISTIC gate. Run it whenever we
-    // don't already have a fresh validator result from turtle_sim this turn (e.g. the model
-    // used only run_js, or declared done with no tool call). Its output is injected into
-    // history and the loop breaks ONLY on a real PASS — the agent cannot self-declare done.
-    if (!ranValidatorFresh) {
+    if (s.best.passed) return done(); // turtle_sim just passed every invariant
+
+    // validator-in-the-loop gate: run the DETERMINISTIC validator ONLY when the agent took no
+    // action this turn (i.e. it is trying to conclude). It cannot self-declare done — if
+    // /work/prog.lua doesn't pass, inject the verdict and keep looping. We deliberately do NOT
+    // run it on active turns (turtle_sim already validated; run_js is exploration), so it no
+    // longer fires on every exploration turn.
+    if (a.toolCalls.length === 0) {
       try {
         const chk = await checkCompleted({ workSession, envs: input.envs });
         if (chk.score > s.best.score) s.best = { program: chk.program || s.best.program, score: chk.score, total: chk.total, passed: chk.complete };
         s.best.passed = s.best.passed || chk.complete;
-        s.messages.push({ role: "user", content: chk.feedback });
-        // anti-rabbit-hole: if it keeps exploring (run_js / no tool) without ever submitting, force it
-        if (s.attempts === 0 && s.step >= 1)
-          s.messages.push({ role: "user", content: `⚠ You have taken ${s.step + 1} turns and called turtle_sim 0 times — you are exploring instead of building. STOP calling run_js. The reference skills in the system prompt are sufficient. On THIS turn, write your COMPLETE Lua turtle program and submit it with turtle_sim.` });
         if (chk.complete) return done();
-      } catch { /* validator env error -> skip this turn's gate, keep going */ }
-    } else if (s.best.passed) {
-      return done();
+        s.messages.push({ role: "user", content: chk.feedback + " You are not done — write or refine your Lua program and test it with turtle_sim." });
+      } catch { /* validator env error -> keep going */ }
     }
 
     s.step++;
     if (s.step % COMPACT_EVERY === 0) await continueAsNew<typeof researchWorkflow>(input, s);
+  }
+
+  // final gate: catch a passing program that was written (e.g. via run_js) but never tool-tested
+  if (!s.best.passed) {
+    try {
+      const chk = await checkCompleted({ workSession, envs: input.envs });
+      if (chk.score > s.best.score) s.best = { program: chk.program || s.best.program, score: chk.score, total: chk.total, passed: chk.complete };
+    } catch { /* ignore */ }
   }
   return done();
 }
