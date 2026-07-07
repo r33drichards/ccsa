@@ -30,7 +30,10 @@ function lua(v: unknown): string {
   return String(v);
 }
 
-function envToYaml(e: Env, i: number): string {
+// The Lua chunk that `return`s the world table for one environment: start, chests,
+// (optional) recipes, and the `test(sim)` post-condition. Shared by the YAML display
+// (system prompt) and the validator (sim.ts builds craftos nodes from this).
+export function envToWorldLua(e: Env): string {
   const s = { x: 8, y: 64, z: 8, facing: "south", fuel: 20000, ...(e.start || {}) };
   const chests = e.chests
     ? "{ " + Object.entries(e.chests).map(([k, c]) => {
@@ -42,17 +45,26 @@ function envToYaml(e: Env, i: number): string {
       }).join(", ") + " }"
     : "{}";
   const recipes = e.recipes && e.recipes.length ? lua(e.recipes) : null;
-  return `    - label: env_${i}${e.name ? "_" + e.name.replace(/[^a-z0-9]+/gi, "_") : ""}
+  return `return {
+  start = { x = ${s.x}, y = ${s.y}, z = ${s.z}, facing = '${s.facing}', fuel = ${s.fuel} },
+  chests = ${chests},${recipes ? `\n  recipes = ${recipes},` : ""}
+  test = function(sim)
+${e.test.split("\n").map((l) => "    " + l).join("\n")}
+  end,
+}`;
+}
+
+export function envLabel(e: Env, i: number): string {
+  return `env_${i}${e.name ? "_" + e.name.replace(/[^a-z0-9]+/gi, "_") : ""}`;
+}
+
+function envToYaml(e: Env, i: number): string {
+  const worldLua = envToWorldLua(e).split("\n").map((l) => "        " + l).join("\n");
+  return `    - label: ${envLabel(e, i)}
       collect: true
       program: "@file:prog.lua"
       world_lua: |
-        return {
-          start = { x = ${s.x}, y = ${s.y}, z = ${s.z}, facing = '${s.facing}', fuel = ${s.fuel} },
-          chests = ${chests},${recipes ? `\n          recipes = ${recipes},` : ""}
-          test = function(sim)
-${e.test.split("\n").map((l) => "            " + l).join("\n")}
-          end,
-        }`;
+${worldLua}`;
 }
 
 export function arenaYaml(task: string, envs: Env[], timeoutMs = 60000): string {

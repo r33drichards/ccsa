@@ -14,6 +14,7 @@ import { z } from "zod";
 import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { zEnv, arenaYaml, type Env } from "./arena-object.ts";
+import { buildSystemPrompt } from "./sim.ts";
 
 const REPO = join(import.meta.dirname, "..", "..");
 const address = process.env.TEMPORAL_ADDRESS || "localhost:7233";
@@ -120,8 +121,9 @@ function buildServer(): McpServer {
     },
   }, async ({ task, environments, timeoutMs }: { task: string; environments: Env[]; timeoutMs?: number }) => {
     const arena = arenaYaml(task, environments, timeoutMs ?? 60000);
+    const systemPrompt = buildSystemPrompt(task, environments, arena);
     const workflowId = "turtle-" + Math.random().toString(36).slice(2, 10);
-    await client.workflow.start("researchWorkflow", { args: [arena], taskQueue, workflowId });
+    await client.workflow.start("researchWorkflow", { args: [{ task, envs: environments, systemPrompt }], taskQueue, workflowId });
     const body = { workflowId, ui: `${uiBase}/namespaces/default/workflows/${workflowId}`, environments: environments.length };
     return { content: [{ type: "text" as const, text: JSON.stringify(body) }], structuredContent: body };
   });

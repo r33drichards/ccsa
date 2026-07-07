@@ -1,82 +1,99 @@
-// Temporal activity: the RESEARCHER. Input is an arena.yaml (a sim spec). A pi-SDK
-// glm agent, restricted to a turtle_sim tool, writes a Lua program and iterates
-// against the arena's invariants until they all pass. Returns the program.
-import { createAgentSession, AuthStorage, ModelRegistry, SessionManager, defineTool } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
-import { spawnSync } from "node:child_process";
-import { writeFileSync, readFileSync, existsSync, mkdtempSync } from "node:fs";
+// Temporal activities for the Temporal-native researcher (pi removed). The WORKFLOW
+// owns the agentic loop + message history (durable via event replay); these activities
+// are the non-deterministic I/O it dispatches:
+//   openSandbox  - open the mcp-js languages session + seed engine/skills into /work
+//   callLlm      - one glm completion (Ollama OpenAI-compatible API) with the tools
+//   turtleSim    - run the submitted Lua against the arena via mcp-js (the state mutation)
+//   runJs        - raw run_js passthrough, so the agent can inspect the sandbox itself
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import * as lang from "./mcp-languages.ts";
+import { validatorFromWorkCode, parseSim, skillSeedFiles, WORK_PROG, type SimResult } from "./sim.ts";
+import type { Env } from "./arena-object.ts";
 
 const REPO = join(import.meta.dirname, "..", "..");
-const MODELS = join(REPO, "pi-turtle", "agent", "models.json");
-const PORT = process.env.TURTLE_PORT || "8790";
-const RUN_SIM = join(REPO, "spike", "melon-loop", "bin", "run_sim.py");
+const LANG_URL = `http://127.0.0.1:${process.env.TURTLE_PORT || "8790"}/mcp`;
+const OLLAMA_BASE = (() => {
+  try { return JSON.parse(readFileSync(join(REPO, "pi-turtle", "agent", "models.json"), "utf8")).providers.ollama.baseUrl; }
+  catch { return "https://ollama.com/v1"; }
+})();
 
-export type ResearchResult = {
-  passed: boolean; score: number; total: number; program: string; attempts: number; error?: string;
-};
-
-function readSkill(name: string): string {
-  const p = join(REPO, "languages", "skills", name, "SKILL.md");
-  return existsSync(p) ? readFileSync(p, "utf8") : "";
-}
-// pick the abstract skill that matches the arena, from the arena text alone
-function skillFor(arena: string): string {
-  if (/recipes|craft/i.test(arena)) return readSkill("turtle-crafter-compressor");
-  if (/sorted|consolidat/i.test(arena)) return readSkill("turtle-sorter");
-  return readSkill("cc-tweaked");
+// open a languages connection bound to this workflow's persistent /work
+async function conn(workSession: string): Promise<lang.Conn> {
+  return lang.open(LANG_URL, workSession);
 }
 
-function runSim(specPath: string): { score: number; total: number; failures: string[] } {
-  const r = spawnSync("uv", ["run", RUN_SIM, "--port", PORT, "--spec", specPath], { cwd: REPO, encoding: "utf8", timeout: 120000 });
-  const err = (r.stderr || "") + (r.stdout || "");
-  const m = err.match(/passed=(\d+)\s+failed=(\d+)/);
-  const score = m ? parseInt(m[1], 10) : 0;
-  const total = m ? parseInt(m[1], 10) + parseInt(m[2], 10) : 0;
-  const failures = (err.match(/^\s*FAIL\s+-.*$/gm) || []).map((s) => s.trim());
-  return { score, total, failures };
+// Seed the craftos engine + full skills tree into /work (once per workflow run).
+export async function openSandbox(workSession: string): Promise<{ seeded: number }> {
+  const files = skillSeedFiles();
+  const c = await conn(workSession);
+  await lang.seed(c, files);
+  return { seeded: Object.keys(files).length };
 }
 
-export async function research(arena: string): Promise<ResearchResult> {
-  const dir = mkdtempSync(join(tmpdir(), "turtle-arena-"));
-  const specPath = join(dir, "arena.yaml");
-  writeFileSync(specPath, arena);
-  const progPath = join(dir, "prog.lua");
-  const task = (arena.match(/^task:\s*(.*)$/m) || [, "Make a turtle that passes the arena."])[1];
-  const skill = skillFor(arena);
+export type LlmOut = { content: string; toolCalls: { id: string; name: string; arguments: string }[] };
 
-  const auth = AuthStorage.create();
-  const reg = ModelRegistry.create(auth, MODELS);
-  const model = reg.find("ollama", process.env.TURTLEFLOW_MODEL || "glm-5.2");
-  if (!model) return { passed: false, score: 0, total: 0, program: "", attempts: 0, error: "model ollama/glm-5.2 not found" };
-
-  let best = { program: "", score: -1, total: 0, passed: false };
-  let attempts = 0;
-  const turtleSim = defineTool({
-    name: "turtle_sim",
-    description: "Test a full CC:Tweaked Lua turtle program against the arena. Returns score (invariants passed) and the failing assertions. Submit the COMPLETE program; iterate until failed=0.",
-    parameters: Type.Object({ program: Type.String({ description: "The complete Lua program." }) }),
-    execute: async (_id: string, { program }: { program: string }) => {
-      attempts++;
-      writeFileSync(progPath, program);
-      const { score, total, failures } = runSim(specPath);
-      if (score > best.score) best = { program, score, total, passed: total > 0 && score === total };
-      const head = total > 0 ? `score: ${score}/${total}${score === total ? "  ✅ ALL PASS" : ""}` : "score: 0 (program errored)";
-      const fails = failures.length ? "\nfailing:\n" + failures.map((f) => "  " + f).join("\n") : "";
-      return { content: [{ type: "text", text: head + fails }], details: { score, total } };
-    },
+// One completion. Env access is allowed in activities; Temporal owns retries.
+export async function callLlm(input: { messages: unknown[]; tools: unknown[]; model: string }): Promise<LlmOut> {
+  const key = process.env.OLLAMA_API_KEY;
+  if (!key) throw new Error("OLLAMA_API_KEY not set");
+  const model = process.env.TURTLEFLOW_MODEL || input.model || "glm-5.2";
+  const r = await fetch(`${OLLAMA_BASE}/chat/completions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+    body: JSON.stringify({ model, messages: input.messages, tools: input.tools, tool_choice: "auto", temperature: 0 }),
+    signal: AbortSignal.timeout(180000),
   });
+  if (!r.ok) throw new Error(`llm ${r.status}: ${(await r.text()).slice(0, 300)}`);
+  const j: any = await r.json();
+  const m = j.choices?.[0]?.message ?? {};
+  return {
+    content: m.content ?? "",
+    toolCalls: (m.tool_calls ?? []).map((tc: any) => ({ id: tc.id, name: tc.function?.name, arguments: tc.function?.arguments ?? "{}" })),
+  };
+}
 
-  const { session } = await createAgentSession({
-    model, authStorage: auth, modelRegistry: reg,
-    sessionManager: SessionManager.inMemory(),
-    customTools: [turtleSim], tools: ["turtle_sim"],
-  });
-  await session.prompt(
-    `Write a CC:Tweaked Lua turtle program and get it passing. ${task}\n\n` +
-    `Use the turtle_sim tool: submit your FULL program, read the failing invariants, fix, and resubmit ` +
-    `until failed=0. Do not stop until every check passes.\n\nGuidance:\n${skill}`);
-  session.dispose();
-  return { ...best, attempts };
+export type SimObs = SimResult & { observation: string };
+
+function observe(res: SimResult): string {
+  const head = res.total > 0 ? `score: ${res.score}/${res.total}${res.passed ? "  ✅ ALL PASS (0 failed)" : ""}` : "score: 0 (program errored at runtime — see log)";
+  const fails = res.failures.length ? "\nfailing invariants:\n" + res.failures.map((f) => "  " + f).join("\n") : "";
+  const log = res.total === 0 && res.output ? "\n" + res.output.slice(0, 1500) : "";
+  return head + fails + log;
+}
+
+// turtle_sim: the state MUTATION — write the program to /work/prog.lua (single source
+// of truth), then run it against every env. Returns the sim result as the agent's
+// self-test observation.
+export async function turtleSim(input: { workSession: string; program: string; envs: Env[] }): Promise<SimObs> {
+  const c = await conn(input.workSession);
+  await lang.runJs(c, `await fs.writeFile(${JSON.stringify(WORK_PROG)}, ${JSON.stringify(input.program)}); console.log('wrote ' + ${JSON.stringify(input.program.length)} + ' bytes');`);
+  const res = parseSim(await lang.runJs(c, validatorFromWorkCode(input.envs)));
+  return { ...res, observation: observe(res) };
+}
+
+// check_completed: the DETERMINISTIC VALIDATOR that gates the loop (validator-in-the-
+// loop). Runs /work/prog.lua against every env and reports whether the task is truly
+// complete — the agent cannot end the loop by merely declaring success.
+export async function checkCompleted(input: { workSession: string; envs: Env[] }): Promise<{ complete: boolean; feedback: string; score: number; total: number }> {
+  const c = await conn(input.workSession);
+  const text = await lang.runJs(c, validatorFromWorkCode(input.envs));
+  if (text.includes('"status":"missing"')) {
+    return { complete: false, score: 0, total: 0,
+      feedback: "VALIDATOR: no program at /work/prog.lua yet. Submit your COMPLETE Lua program to turtle_sim (it writes the file); the deterministic validator runs it every turn and gates completion." };
+  }
+  const res = parseSim(text);
+  const feedback = res.passed
+    ? `VALIDATOR: SIM_RESULT: PASS — all ${res.total} invariants met. Task complete.`
+    : `VALIDATOR (deterministic; ran your /work/prog.lua against every environment): ${res.score}/${res.total} invariants passed.` +
+      (res.failures.length ? "\n" + res.failures.map((f) => "  " + f).join("\n") : "") +
+      (res.total === 0 ? "\n(program errored at runtime)\n" + res.output.slice(0, 1200) : "") +
+      "\nYou are NOT done until 0 failed. Revise the program and resubmit it via turtle_sim.";
+  return { complete: res.passed, feedback, score: res.score, total: res.total };
+}
+
+// run_js: raw sandbox passthrough for the agent's own inspection.
+export async function runJs(input: { workSession: string; code: string }): Promise<{ text: string }> {
+  const c = await conn(input.workSession);
+  return { text: (await lang.runJs(c, input.code)).slice(0, 8000) };
 }
