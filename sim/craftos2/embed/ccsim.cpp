@@ -172,20 +172,6 @@ std::string prelude(int net, bool turtle) {
              "end\n";
     return s.str();
 }
-
-// Appended AFTER a turtle node's program. If the world defined a `test(sim)`
-// post-condition, run it now (the program has finished), emit the assertion log
-// + summary, and signal done(). No-op when the world has no test. This is what
-// gives the multi-node runner the same post-condition support as harness.lua;
-// keep it in sync with the sim/engine.lua `sim.runTest()` contract.
-std::string postlude(bool turtle) {
-    if (!turtle) return "";
-    return "\n;do local __s=_G.sim if __s and __s.hasTest then __s.runTest()"
-           " for _,l in ipairs(__s.log) do emit(l) end"
-           " emit(('sim: %d passed, %d failed'):format(__s.passed,__s.failed))"
-           " emit('SIM_RESULT: '..(__s.failed==0 and 'PASS' or 'FAIL'))"
-           " if done then done() end end end\n";
-}
 } // namespace
 
 // --- WebAssembly return-value side channel -----------------------------------
@@ -283,7 +269,7 @@ char* cc_run(const char* spec_json) {
                 std::ofstream(d / "world.json") << nd["world"].dump();
             }
         }
-        Computer* comp = spawn(id, pos, prelude(net, turtle) + "\n" + program + "\n" + postlude(turtle));
+        Computer* comp = spawn(id, pos, prelude(net, turtle) + "\n" + program + "\n");
         recs.push_back({id, label, collect, turtle, comp});
     }
 

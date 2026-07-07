@@ -12,7 +12,9 @@
 # craftos2-lua/src/liblua.a (build with: make -C craftos2-lua/src a CC=emcc ...).
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
-export PATH="/opt/homebrew/bin:$PATH"
+# prefer an emcc already on PATH (e.g. `nix shell nixpkgs#emscripten`); only fall
+# back to a Homebrew install if none is found.
+command -v emcc >/dev/null 2>&1 || export PATH="/opt/homebrew/bin:$PATH"
 
 ROM="${CRAFTOS_ROM:-$HOME/craftos2-rom}"
 POCO_INC="${POCO_INC:-/opt/homebrew/include}"
@@ -37,6 +39,8 @@ CPPFLAGS=(
   -Wno-unused-command-line-argument
 )
 CFLAGS=( -O2 -g0 -sUSE_SDL=2 -Wno-unknown-warning-option )
+# extra -I dirs for split toolchains (nix): Poco headers transitively need openssl/zlib/pcre/expat
+[ -n "${EXTRA_CPPFLAGS:-}" ] && CPPFLAGS+=( ${EXTRA_CPPFLAGS} )
 
 # Emulator C++ sources (mirrors Makefile.in _OBJ, minus main.cpp; http via the
 # emscripten FETCH backend instead of the Poco::Net one).
