@@ -7,18 +7,22 @@
 import { proxyActivities, workflowInfo, continueAsNew } from "@temporalio/workflow";
 import type * as acts from "./activities.ts";
 import { TOOLS } from "./tools.ts";
+import { estTokens, sendView, COMPACT_THRESHOLD, toolsSchemaTok } from "./compaction.ts";
 import type { Env } from "./arena-object.ts";
 
 const { openSandbox, turtleSim, checkCompleted, runJs } = proxyActivities<typeof acts>({
   startToCloseTimeout: "5 minutes",
   retry: { maximumAttempts: 6, initialInterval: "2 seconds", maximumInterval: "30 seconds" },
 });
-// callLlm + summarize get a longer budget (glm can be slow on larger contexts) and fewer
-// retries — a retry with the SAME context just times out again, so don't burn 6 attempts.
-const { callLlm, summarize } = proxyActivities<typeof acts>({
+// callLlm + compact get a longer budget (glm can be slow on larger contexts, and compact makes
+// one or more summarize calls) and fewer retries — a retry with the SAME context just times out
+// again, so don't burn 6 attempts.
+const { callLlm, compact } = proxyActivities<typeof acts>({
   startToCloseTimeout: "6 minutes",
   retry: { maximumAttempts: 3, initialInterval: "3 seconds", maximumInterval: "20 seconds" },
 });
+
+const TOOLS_SCHEMA_TOK = toolsSchemaTok(TOOLS); // static tool-schema token cost, for the gate
 
 export type ResearchInput = { task: string; envs: Env[]; systemPrompt: string; model?: string; maxSteps?: number; maxTokens?: number };
 export type ResearchResult = { passed: boolean; score: number; total: number; program: string; attempts: number; steps: number; tokens: number };
@@ -27,78 +31,10 @@ type LoopState = { messages: any[]; step: number; best: Best; attempts: number; 
 
 const COMPACT_EVERY = 30; // continue-as-new cadence, to bound Temporal event-history size
 
-// ── Context compaction: threshold-triggered rolling summary + tool-pair-safe verbatim tail.
-// Bind to glm-5.2's window (Ollama glm-5.2:cloud = 976K tokens) but run under a working cap for
-// latency. The WHEN (estTokens) and WHICH (group-boundary tail walk) are pure -> replay-stable;
-// only summarize() is non-deterministic (an activity; Temporal records its result).
-const MODEL_WINDOW = 976000;                              // glm-5.2:cloud context window (Ollama) — re-read if the tag changes
-const WORKING_CAP = Math.min(160000, MODEL_WINDOW);      // practical latency/cost budget, ~16% of the window
-const COMPACT_THRESHOLD = Math.floor(0.70 * WORKING_CAP); // 112000 — compact when the sent view reaches this
-const COMPACT_TARGET = Math.floor(0.50 * WORKING_CAP);    // 80000 — fold/evict down to this
-const TAIL_TOKEN_BUDGET = 40000;                          // keep this many recent est-tokens verbatim
-const MIN_TAIL_GROUPS = 3;                                // ...but always keep at least this many recent turn-groups
-const TOOLS_SCHEMA_TOK = Math.ceil(JSON.stringify(TOOLS).length / 4); // static tool-schema token cost
-
-// deterministic ~4-chars/token estimate (+8 per-message role/framing overhead)
-function estMsg(m: any): number {
-  const s = String(m.content ?? "").length
-    + (m.tool_calls ? JSON.stringify(m.tool_calls).length : 0)
-    + (m.tool_call_id ? String(m.tool_call_id).length : 0);
-  return Math.ceil(s / 4) + 8;
-}
-function estTokens(view: any[]): number {
-  let t = TOOLS_SCHEMA_TOK;
-  for (const m of view) t += estMsg(m);
-  return t;
-}
-// what we actually send: pinned system + first user, then the rolling summary block, then live turns
-function sendView(s: LoopState): any[] {
-  const head: any[] = [s.messages[0], s.messages[1]];
-  if (s.summary) head.push({ role: "system", content: "CONVERSATION SUMMARY (compacted history; authoritative record of everything before the recent turns):\n" + s.summary });
-  return head.concat(s.messages.slice(2));
-}
-// pure turn-group boundaries over msgs[start..]: an assistant(tool_calls) + its following tool
-// messages is one atomic group; any other message is its own group. Cuts land only on boundaries.
-function groupsFrom(msgs: any[], start: number): { start: number; end: number }[] {
-  const groups: { start: number; end: number }[] = [];
-  let i = start;
-  while (i < msgs.length) {
-    let j = i + 1;
-    if (msgs[i].role === "assistant" && msgs[i].tool_calls) while (j < msgs.length && msgs[j].role === "tool") j++;
-    groups.push({ start: i, end: j });
-    i = j;
-  }
-  return groups;
-}
-// called BEFORE every callLlm. Deterministic except the summarize ACTIVITY.
-async function compactIfNeeded(s: LoopState): Promise<void> {
-  if (estTokens(sendView(s)) < COMPACT_THRESHOLD) return;
-  const groups = groupsFrom(s.messages, 2);
-  if (groups.length === 0) return;
-  // 1) pick the verbatim tail by walking whole groups backward (pure)
-  let acc = 0, kept = 0, tailStart = s.messages.length;
-  for (let gi = groups.length - 1; gi >= 0; gi--) {
-    const g = groups[gi];
-    let gTok = 0; for (let k = g.start; k < g.end; k++) gTok += estMsg(s.messages[k]);
-    if (kept >= MIN_TAIL_GROUPS && acc + gTok > TAIL_TOKEN_BUDGET) break;
-    acc += gTok; kept++; tailStart = g.start;
-  }
-  // 2) fold the evicted middle into the rolling summary (the LLM activity)
-  const evicted = s.messages.slice(2, tailStart);
-  if (evicted.length > 0) {
-    const sum = await summarize({ oldSummary: s.summary, evicted, task: String(s.messages[1].content) });
-    s.summary = sum.summary; s.tokens += sum.tokens;
-    s.messages = [s.messages[0], s.messages[1], ...s.messages.slice(tailStart)];
-  }
-  // 3) if the tail alone still exceeds target, fold its oldest groups one at a time (keep a min tail)
-  while (estTokens(sendView(s)) > COMPACT_TARGET) {
-    const g = groupsFrom(s.messages, 2);
-    if (g.length <= MIN_TAIL_GROUPS) break;
-    const chunk = s.messages.slice(2, g[0].end);
-    const sum = await summarize({ oldSummary: s.summary, evicted: chunk, task: String(s.messages[1].content) });
-    s.summary = sum.summary; s.tokens += sum.tokens;
-    s.messages = [s.messages[0], s.messages[1], ...s.messages.slice(g[0].end)];
-  }
+// cheap, deterministic gate (workflow-side, no transcript serialization); the actual eviction +
+// summarization is the compact ACTIVITY, invoked only when this trips.
+function needsCompaction(s: LoopState): boolean {
+  return estTokens(sendView(s.messages, s.summary), TOOLS_SCHEMA_TOK) >= COMPACT_THRESHOLD;
 }
 
 export async function researchWorkflow(input: ResearchInput, state?: LoopState): Promise<ResearchResult> {
@@ -128,13 +64,18 @@ export async function researchWorkflow(input: ResearchInput, state?: LoopState):
 
   while (s.step < maxSteps) {
     if (maxTokens && s.tokens >= maxTokens) break; // token budget exhausted -> return best-so-far
-    await compactIfNeeded(s); // bind to glm-5.2's window via rolling-summary compaction
+
+    // bind to glm-5.2's window: cheap gate here, the eviction + summarization is the compact activity
+    if (needsCompaction(s)) {
+      const r = await compact({ messages: s.messages, summary: s.summary, task: String(s.messages[1].content), toolsSchemaTok: TOOLS_SCHEMA_TOK });
+      s.messages = r.messages; s.summary = r.summary; s.tokens += r.tokens;
+    }
 
     // A retry-exhausted activity must NOT hard-FAIL the whole research: end gracefully and
     // return the best attempt (research_status then reports type:error with prog.lua metadata).
     let a: acts.LlmOut;
     try {
-      a = await callLlm({ messages: sendView(s), tools: TOOLS, model });
+      a = await callLlm({ messages: sendView(s.messages, s.summary), tools: TOOLS, model });
     } catch { break; } // e.g. glm timeout after retries -> stop, return best-so-far
     s.tokens += a.tokens;
 

@@ -9,6 +9,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import * as lang from "./mcp-languages.ts";
 import { validatorFromWorkCode, parseSim, skillSeedFiles, WORK_PROG, type SimResult } from "./sim.ts";
+import * as comp from "./compaction.ts";
 import type { Env } from "./arena-object.ts";
 
 const REPO = join(import.meta.dirname, "..", "..");
@@ -113,6 +114,44 @@ export async function summarize(input: { oldSummary: string; evicted: any[]; tas
   if (!r.ok) throw new Error(`summarize ${r.status}: ${(await r.text()).slice(0, 300)}`);
   const j: any = await r.json();
   return { summary: (j.choices?.[0]?.message?.content ?? "").trim(), tokens: j.usage?.total_tokens ?? 0 };
+}
+
+// compact: the WHOLE rolling-summary compaction as one activity (the workflow calls this only
+// when its cheap deterministic gate trips). Picks the verbatim tail on tool-pair-safe group
+// boundaries, folds the evicted middle into the rolling summary via one or more summarize LLM
+// calls, and returns the new message list + summary + tokens spent. Returns messages unchanged
+// if there is nothing evictable.
+export async function compact(input: { messages: any[]; summary: string; task: string; toolsSchemaTok: number }): Promise<{ messages: any[]; summary: string; tokens: number }> {
+  let messages = input.messages.slice();
+  let summary = input.summary;
+  let tokens = 0;
+  const groups = comp.groupsFrom(messages, 2);
+  if (groups.length === 0) return { messages, summary, tokens };
+  // 1) verbatim tail: walk whole groups backward until the token budget / min-groups floor
+  let acc = 0, kept = 0, tailStart = messages.length;
+  for (let gi = groups.length - 1; gi >= 0; gi--) {
+    const g = groups[gi];
+    let gTok = 0; for (let k = g.start; k < g.end; k++) gTok += comp.estMsg(messages[k]);
+    if (kept >= comp.MIN_TAIL_GROUPS && acc + gTok > comp.TAIL_TOKEN_BUDGET) break;
+    acc += gTok; kept++; tailStart = g.start;
+  }
+  // 2) fold the evicted middle into the rolling summary
+  const evicted = messages.slice(2, tailStart);
+  if (evicted.length > 0) {
+    const sum = await summarize({ oldSummary: summary, evicted, task: input.task });
+    summary = sum.summary; tokens += sum.tokens;
+    messages = [messages[0], messages[1], ...messages.slice(tailStart)];
+  }
+  // 3) if the tail alone still exceeds target, fold its oldest groups one at a time (keep a min tail)
+  while (comp.estTokens(comp.sendView(messages, summary), input.toolsSchemaTok) > comp.COMPACT_TARGET) {
+    const g = comp.groupsFrom(messages, 2);
+    if (g.length <= comp.MIN_TAIL_GROUPS) break;
+    const chunk = messages.slice(2, g[0].end);
+    const sum = await summarize({ oldSummary: summary, evicted: chunk, task: input.task });
+    summary = sum.summary; tokens += sum.tokens;
+    messages = [messages[0], messages[1], ...messages.slice(g[0].end)];
+  }
+  return { messages, summary, tokens };
 }
 
 export type SimObs = SimResult & { observation: string };
