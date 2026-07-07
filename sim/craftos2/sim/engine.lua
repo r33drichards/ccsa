@@ -497,7 +497,27 @@ function M.install(world)
   function sim.inventory() return deepcopyInv(inv) end
   function sim.selectedSlot() return selected end
   function sim.block(x, y, z) return blockAt(x, y, z) end
-  function sim.chest(x, y, z) return chests[key(x, y, z)] end
+  -- Return a DEFENSIVE COPY of the chest's slots, never the live world table: a
+  -- returned live reference let a program fake the end state (e.g.
+  -- `sim.chest(x,y,z)[1] = {...}`) and pass every invariant without doing any
+  -- turtle work — a false-positive verification. Mirrors sim.inventory()'s
+  -- deepcopy. (github issues #1/#2)
+  function sim.chest(x, y, z)
+    local c = chests[key(x, y, z)]
+    if c == nil then return nil end
+    local out = {}
+    for i = 1, #c do
+      local s = c[i]
+      if type(s) == "table" then
+        local t = {}
+        for k, v in pairs(s) do t[k] = v end
+        out[i] = t
+      else
+        out[i] = s
+      end
+    end
+    return out
+  end
   function sim.worldDiff()
     local diff = {}
     for k in pairs(overrides) do
