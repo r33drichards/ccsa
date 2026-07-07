@@ -57,17 +57,33 @@ function runSim(): Promise<SimResult> {
   });
 }
 
-// Deterministically generate a craftgen spec.yaml for an input -> craft -> output
-// compression turtle. The model supplies structured params; we emit correct Lua
-// (chests, recipe registration, auto-derived postconditions) so the SIM is always
-// valid — the turtle program is what gets iterated, not the test.
+// create_sim builds the ARENA the auto-researcher must solve: a battery of
+// diverse simulation environments (edge cases, spread, adversarial input layouts)
+// checked with INVARIANTS rather than answer-encoding. Passing every environment
+// forces a genuinely robust turtle. The model supplies structured params; we emit
+// correct Lua so the arena is always valid — only the turtle program is iterated.
 interface SimParams {
   name?: string;
   inputItem: string;
   outputItem: string;
   perCraft?: number;      // ingredients per craft (default 9 = full 3x3)
   inputAbove?: boolean;   // input chest above the turtle (default true); output is the other side
-  worlds?: number[];      // input counts per sim world
+  worlds?: number[];      // OPTIONAL explicit input counts (overrides the default battery)
+}
+
+// Distribute N input items across chest slots. "normal" packs 64-stacks;
+// "scatter" spreads into many small odd stacks to stress drain/consolidation.
+function layout(inItem: string, N: number, mode: "normal" | "scatter"): string {
+  const parts: string[] = [];
+  let r = N;
+  const chunks = mode === "scatter" ? [3, 7, 1, 11, 5, 9, 13, 2] : [64];
+  let ci = 0;
+  while (r > 0) {
+    const c = Math.min(mode === "scatter" ? chunks[ci++ % chunks.length] : 64, r);
+    parts.push(`{ name = '${inItem}', count = ${c} }`);
+    r -= c;
+  }
+  return parts.join(", ");
 }
 
 function genSpec(p: SimParams): { yaml: string; worlds: number[]; per: number; maxScore: number } {
@@ -76,46 +92,72 @@ function genSpec(p: SimParams): { yaml: string; worlds: number[]; per: number; m
   const inC = above ? [8, 65, 8] : [8, 63, 8];
   const outC = above ? [8, 63, 8] : [8, 65, 8];
   const inKey = inC.join(","), outKey = outC.join(",");
-  const worlds = (p.worlds && p.worlds.length) ? p.worlds : [per * 7, per * 15 + Math.max(1, per - 4)];
   const inItem = p.inputItem, outItem = p.outputItem;
-  const stk = (n: number) => {
-    const parts: string[] = []; let r = n;
-    while (r > 0) { const c = Math.min(64, r); parts.push(`{ name = '${inItem}', count = ${c} }`); r -= c; }
-    return parts.join(", ");
-  };
-  const node = (i: number, N: number) => `    - label: world_${i}
+
+  // The environment battery: edge cases + a spread of sizes + an adversarial
+  // input layout. Each must be handled by ONE program → robustness.
+  type Env = { N: number; mode: "normal" | "scatter"; note: string };
+  const envs: Env[] = (p.worlds && p.worlds.length)
+    ? p.worlds.map((N) => ({ N, mode: "normal" as const, note: "explicit" }))
+    : [
+        { N: 0, mode: "normal", note: "empty input" },
+        { N: per - 1, mode: "normal", note: "below one batch (all leftover)" },
+        { N: per, mode: "normal", note: "exactly one" },
+        { N: per + 1, mode: "normal", note: "one + leftover" },
+        { N: 5 * per, mode: "normal", note: "several, no remainder" },
+        { N: 7 * per + Math.max(1, per - 2), mode: "normal", note: "several + odd remainder" },
+        { N: 30 * per + 4, mode: "normal", note: "large, awkward remainder" },
+        { N: 11 * per + 5, mode: "scatter", note: "input scattered across small stacks" },
+      ].filter((e) => e.N >= 0);
+
+  const node = (i: number, e: Env) => `    - label: env_${i}_${e.note.replace(/[^a-z0-9]+/gi, "_")}
       collect: true
       program: "@file:prog.lua"
       world_lua: |
-        local N = ${N}
+        local N = ${e.N}   -- ${e.note}
         return {
           start = { x = 8, y = 64, z = 8, facing = 'south', fuel = 20000 },
           recipes = { { output = { name = '${outItem}', count = 1 }, shapeless = { ['${inItem}'] = ${per} } } },
-          chests = { ['${inKey}'] = { ${stk(N)} }, ['${outKey}'] = {} },
+          chests = { ['${inKey}'] = { ${layout(inItem, e.N, e.mode)} }, ['${outKey}'] = {} },
           test = function(sim)
-            local function sumIn(x, y, z, name)
+            local P = ${per}
+            local function count(x, y, z, name)
               local ch, t = sim.chest(x, y, z), 0
               if ch then for _, it in ipairs(ch) do if it.name == name then t = t + it.count end end end
               return t
             end
-            sim.assertEq(sumIn(${outC.join(", ")}, '${outItem}'), math.floor(N / ${per}), '${outItem} in output chest')
-            sim.assertEq(sumIn(${inC.join(", ")}, '${inItem}'), N % ${per}, 'leftover ${inItem} returned to input chest')
-            local inv, held = sim.inventory(), 0
-            for k = 1, 16 do if inv[k] then held = held + inv[k].count end end
-            sim.assertEq(held, 0, 'turtle inventory emptied')
+            local function others(x, y, z, keep)
+              local ch, t = sim.chest(x, y, z), 0
+              if ch then for _, it in ipairs(ch) do if it.name ~= keep then t = t + it.count end end end
+              return t
+            end
+            local out = count(${outC.join(", ")}, '${outItem}')       -- produced
+            local left = count(${inC.join(", ")}, '${inItem}')        -- returned
+            local inv, held, heldIn = sim.inventory(), 0, 0
+            for k = 1, 16 do if inv[k] then held = held + inv[k].count
+              if inv[k].name == '${inItem}' then heldIn = heldIn + inv[k].count end end end
+            -- INVARIANTS (hold for any correct turtle, no answer encoded):
+            sim.assertEq(out * P + left + heldIn, N, 'conservation: input items neither lost nor duplicated')
+            sim.assertTrue(left < P, 'maximality: a full craftable batch was left behind')
+            sim.assertEq(held, 0, 'terminal: turtle inventory emptied')
+            sim.assertEq(others(${outC.join(", ")}, '${outItem}'), 0, 'purity: output chest holds only the product')
+            sim.assertEq(others(${inC.join(", ")}, '${inItem}'), 0, 'purity: input chest holds only the ingredient')
           end,
         }`;
-  const yaml = `# Generated by create_sim. Compression turtle: ${inItem} -> ${outItem} (${per} -> 1).
+  const yaml = `# Generated by create_sim — the arena for the auto-researcher.
+# Compression turtle: ${inItem} -> ${outItem} (${per} -> 1). ${envs.length} environments, invariant-checked.
 task: >-
   Stationary crafty turtle. Input chest ${above ? "ABOVE" : "BELOW"} holds ${inItem};
-  compress ${per} -> 1 into ${outItem} via turtle.craft(); deposit blocks in the
-  ${above ? "BELOW" : "ABOVE"} chest; return leftover (< ${per}) to the input chest.
+  compress ${per} -> 1 into ${outItem} via turtle.craft(); deposit the product in the
+  ${above ? "BELOW" : "ABOVE"} chest; return leftover (< ${per}) to the input chest. Must
+  work for EVERY environment: empty input, sub-batch amounts, large amounts, and
+  input scattered across many small stacks.
 sim:
   timeout_ms: 60000
   nodes:
-${worlds.map((N, i) => node(i + 1, N)).join("\n")}
+${envs.map((e, i) => node(i + 1, e)).join("\n")}
 `;
-  return { yaml, worlds, per, maxScore: worlds.length * 3 };
+  return { yaml, worlds: envs.map((e) => e.N), per, maxScore: envs.length * 5 };
 }
 
 export default function piTurtle(pi: ExtensionAPI) {
@@ -123,11 +165,13 @@ export default function piTurtle(pi: ExtensionAPI) {
     name: "create_sim",
     label: "Create Sim",
     description:
-      "Set up the test the turtle must pass, for an input -> craft -> output compression " +
+      "Build the ARENA the turtle must solve, for an input -> craft -> output compression " +
       "turtle. Give the input item, output item, and how many inputs make one output. This " +
-      "writes a fresh spec.yaml (chests, recipe, and pass/leftover/empty-inventory checks) " +
-      "that turtle_sim then tests against. Call this FIRST, before writing any program.",
-    promptSnippet: "Create the sim/test for a compression turtle (input item, output item, ratio).",
+      "writes a battery of diverse environments (empty input, sub-batch amounts, large " +
+      "amounts, input scattered across many small stacks) checked with INVARIANTS " +
+      "(conservation, maximality, empty inventory, chest purity) — so only a robust program " +
+      "passes them all. Call this FIRST, before writing any program.",
+    promptSnippet: "Build the environment arena for a compression turtle (input item, output item, ratio).",
     parameters: Type.Object({
       inputItem: Type.String({ description: "Item id consumed, e.g. minecraft:melon_slice" }),
       outputItem: Type.String({ description: "Item id produced, e.g. minecraft:melon" }),
@@ -141,14 +185,16 @@ export default function piTurtle(pi: ExtensionAPI) {
       }
       const g = genSpec(params);
       writeFileSync(join(SIM_DIR, "spec.yaml"), g.yaml);
-      const lines = g.worlds.map((N) =>
-        `  - ${N} ${params.inputItem} -> ${Math.floor(N / g.per)} ${params.outputItem}, ${N % g.per} leftover`);
+      const lines = g.worlds.map((N) => `  - N=${N} input`);
       return {
         content: [{ type: "text" as const, text:
-          `Sim created (${params.inputItem} -> ${params.outputItem}, ${g.per} -> 1). ` +
-          `${g.worlds.length} world(s), max score ${g.maxScore}:\n${lines.join("\n")}\n\n` +
-          `Now write the turtle program and test it with turtle_sim until the score is ${g.maxScore}/${g.maxScore}.` }],
-        details: { worlds: g.worlds, perCraft: g.per, maxScore: g.maxScore },
+          `Arena created (${params.inputItem} -> ${params.outputItem}, ${g.per} -> 1): ` +
+          `${g.worlds.length} environments, ${g.maxScore} invariant checks total.\n${lines.join("\n")}\n\n` +
+          `Each environment checks the same invariants (conservation, maximality, empty ` +
+          `inventory, chest purity). Write ONE turtle program and iterate with turtle_sim ` +
+          `until it passes ALL ${g.maxScore}/${g.maxScore} — it must handle empty input, ` +
+          `sub-batch amounts, large amounts, and scattered stacks.` }],
+        details: { environments: g.worlds, perCraft: g.per, maxScore: g.maxScore },
       };
     },
   });

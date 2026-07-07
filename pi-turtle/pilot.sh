@@ -23,10 +23,11 @@ ARGS=(--provider ollama --model glm-5.2 -a
       --no-skills                                 # drop GLOBAL skills…
       --no-context-files)                         # …and global ~/AGENTS.md / CLAUDE.md
 
-# …then add back this repo's domain skills.
-for d in languages/skills/*/; do
-  [ -f "${d}SKILL.md" ] && ARGS+=(--skill "$d")
-done
+# …then add back this repo's skills, recursively — the CC domain skills AND the
+# vendored obra/superpowers methodology skills (brainstorming, TDD, systematic
+# debugging, …), so BOTH the orchestrator and the auto-researcher have them.
+while IFS= read -r sk; do ARGS+=(--skill "$sk"); done \
+  < <(find languages/skills -name SKILL.md -exec dirname {} \; | sort)
 
 # Flags (any order): --restricted (sandbox to turtle_sim only), --json (stream
 # line-delimited JSON events — reliable for headless/CI; text mode is buffered).

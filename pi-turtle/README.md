@@ -79,9 +79,12 @@ buffered text — reliable for logs/CI. Each `turtle_sim` result arrives as a
 
 The full-mode agent runs the whole flow from a plain-English request:
 
-1. **`create_sim`** — turns "compress iron nuggets into ingots (9→1)" into a fresh
-   `spec.yaml` (chests + recipe + auto-derived pass/leftover/empty checks). Works
-   for **any** input→craft→output compression turtle, not just melons.
+1. **`create_sim`** — turns "compress iron nuggets into ingots (9→1)" into the
+   **arena** the turtle must solve: a battery of diverse environments (empty input,
+   sub-batch amounts, large amounts, input scattered across many small stacks)
+   checked with **invariants** (conservation, maximality, empty inventory, chest
+   purity) rather than a hardcoded expected answer. Passing every environment is
+   what forces a *robust* turtle. Works for any input→craft→output compression.
 2. **`turtle_sim`** — iterate the program until every check passes.
 3. **`publish_gist`** — upload `prog.lua` + `spec.yaml` to a GitHub gist (via `gh`,
    which must be authenticated) and return the URL.
@@ -89,9 +92,12 @@ The full-mode agent runs the whole flow from a plain-English request:
 Example prompt: *"Make a turtle that compresses `minecraft:iron_nugget` into
 `minecraft:iron_ingot` (9→1), then publish it."*
 
-Both load this repo's CC:Tweaked skills (`cc-tweaked` API reference,
-`craftos-sim`, `turtle-crafter-compressor`, …) so the agent knows the API and
-proven patterns, and neither loads your global pi skills or `~/AGENTS.md`.
+Both agents load this repo's skills (recursively from `languages/skills/`): the
+CC:Tweaked domain skills (`cc-tweaked` API reference, `craftos-sim`,
+`turtle-crafter-compressor`, …) **and** the vendored
+[obra/superpowers](https://github.com/obra/superpowers) methodology skills
+(`brainstorming`, `test-driven-development`, `systematic-debugging`, `writing-plans`,
+…). Neither loads your global pi skills or `~/AGENTS.md`.
 
 ## How it works (short version)
 
