@@ -15,6 +15,9 @@ import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { zEnv, arenaYaml, type Env } from "./arena-object.ts";
 import { buildSystemPrompt } from "./sim.ts";
+import { initTelemetry, emitLog } from "./telemetry.ts";
+
+initTelemetry("turtle-research-mcp"); // OTLP logs/traces from the MCP server
 
 const REPO = join(import.meta.dirname, "..", "..");
 const address = process.env.TEMPORAL_ADDRESS || "localhost:7233";
@@ -147,6 +150,7 @@ function buildServer(): McpServer {
     const systemPrompt = buildSystemPrompt(task, environments, arena);
     const workflowId = "turtle-" + Math.random().toString(36).slice(2, 10);
     await client.workflow.start("researchWorkflow", { args: [{ task, envs: environments, systemPrompt, maxSteps, maxTokens }], taskQueue, workflowId, workflowExecutionTimeout: "6 hours" });
+    emitLog("info", `research started: ${workflowId}`, { "workflow.id": workflowId, task, environments: environments.length });
     const body = { workflowId, ui: `${uiBase}/namespaces/default/workflows/${workflowId}`, environments: environments.length };
     return { content: [{ type: "text" as const, text: JSON.stringify(body) }], structuredContent: body };
   });
@@ -175,6 +179,7 @@ function buildServer(): McpServer {
             score: r.score, total: r.total, attempts: r.attempts, steps: r.steps, tokens: r.tokens, ui,
             ...(r.program ? { files: { "prog.lua": r.program } } : {}) };
     } else out = { type: "error", msg: `workflow ${desc.status.name}`, ui };
+    if (out.type !== "running") emitLog(out.type === "ok" ? "info" : "error", `research ${out.type}: ${workflowId}`, { "workflow.id": workflowId, ...out, files: undefined });
     return { content: [{ type: "text" as const, text: JSON.stringify(out) }], structuredContent: out };
   });
 

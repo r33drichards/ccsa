@@ -10,6 +10,7 @@ import { join } from "node:path";
 import * as lang from "./mcp-languages.ts";
 import { validatorFromWorkCode, parseSim, skillSeedFiles, WORK_PROG, type SimResult } from "./sim.ts";
 import * as comp from "./compaction.ts";
+import { recordTokens, recordCall } from "./telemetry.ts";
 import type { Env } from "./arena-object.ts";
 
 const REPO = join(import.meta.dirname, "..", "..");
@@ -39,14 +40,19 @@ export async function callLlm(input: { messages: unknown[]; tools: unknown[]; mo
   const key = process.env.OLLAMA_API_KEY;
   if (!key) throw new Error("OLLAMA_API_KEY not set");
   const model = process.env.TURTLEFLOW_MODEL || input.model || "glm-5.2";
-  const r = await fetch(`${OLLAMA_BASE}/chat/completions`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-    body: JSON.stringify({ model, messages: input.messages, tools: input.tools, tool_choice: "auto", temperature: 0 }),
-    signal: AbortSignal.timeout(840000), // 14 min, just under the 15-min activity ceiling
-  });
-  if (!r.ok) throw new Error(`llm ${r.status}: ${(await r.text()).slice(0, 300)}`);
+  let r: Response;
+  try {
+    r = await fetch(`${OLLAMA_BASE}/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+      body: JSON.stringify({ model, messages: input.messages, tools: input.tools, tool_choice: "auto", temperature: 0 }),
+      signal: AbortSignal.timeout(840000), // 14 min, just under the 15-min activity ceiling
+    });
+  } catch (e) { recordCall("completion", model, "error"); throw e; }
+  if (!r.ok) { recordCall("completion", model, "error"); throw new Error(`llm ${r.status}: ${(await r.text()).slice(0, 300)}`); }
   const j: any = await r.json();
+  recordTokens("completion", model, j.usage);
+  recordCall("completion", model, "ok");
   const m = j.choices?.[0]?.message ?? {};
   return {
     content: m.content ?? "",
@@ -105,14 +111,19 @@ export async function summarize(input: { oldSummary: string; evicted: any[]; tas
     `TASK (first user message, for GOAL/invariants grounding):\n<<<\n${input.task}\n>>>\n\n` +
     `NEW MESSAGES being compacted (oldest agent turns being evicted from live context; assistant text, tool_calls with their Lua/JS arguments, and turtle_sim / run_js tool results):\n<<<\n${renderMessages(input.evicted)}\n>>>\n\n` +
     `Output the updated record now, template only.`;
-  const r = await fetch(`${OLLAMA_BASE}/chat/completions`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-    body: JSON.stringify({ model, temperature: 0, messages: [{ role: "system", content: SUMMARIZER_SYSTEM }, { role: "user", content: user }] }),
-    signal: AbortSignal.timeout(840000), // 14 min, just under the 15-min activity ceiling
-  });
-  if (!r.ok) throw new Error(`summarize ${r.status}: ${(await r.text()).slice(0, 300)}`);
+  let r: Response;
+  try {
+    r = await fetch(`${OLLAMA_BASE}/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+      body: JSON.stringify({ model, temperature: 0, messages: [{ role: "system", content: SUMMARIZER_SYSTEM }, { role: "user", content: user }] }),
+      signal: AbortSignal.timeout(840000), // 14 min, just under the 15-min activity ceiling
+    });
+  } catch (e) { recordCall("summarize", model, "error"); throw e; }
+  if (!r.ok) { recordCall("summarize", model, "error"); throw new Error(`summarize ${r.status}: ${(await r.text()).slice(0, 300)}`); }
   const j: any = await r.json();
+  recordTokens("summarize", model, j.usage);
+  recordCall("summarize", model, "ok");
   return { summary: (j.choices?.[0]?.message?.content ?? "").trim(), tokens: j.usage?.total_tokens ?? 0 };
 }
 
