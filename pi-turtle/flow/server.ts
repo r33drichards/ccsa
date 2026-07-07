@@ -1,6 +1,8 @@
 // Temporal-backed MCP task server: exposes the turtle RESEARCHER.
 //   tool  research_trigger({ task, environments }) -> { workflowId }   (you build the arena)
 //   tool  research_status({ workflowId })          -> {running} | {ok, files:{prog.lua}} | {error}
+//   resources  skill://<name>  -> every languages/skills SKILL.md (reference for the sub-agent)
+//   (SKILLS_AS_TOOLS=1 also mirrors each skill as a skill_<name> tool for resource-less clients)
 // The sub-agent (behind the workflow) writes the turtle Lua; the caller only builds the arena.
 // Transport: HTTP (StreamableHTTP at /mcp) when MCP_HTTP_PORT is set (deploy), else stdio.
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -9,12 +11,64 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { createServer as createHttp } from "node:http";
 import { Client, Connection } from "@temporalio/client";
 import { z } from "zod";
+import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
+import { join } from "node:path";
 import { zEnv, arenaYaml, type Env } from "./arena-object.ts";
 
+const REPO = join(import.meta.dirname, "..", "..");
 const address = process.env.TEMPORAL_ADDRESS || "localhost:7233";
 const uiBase = process.env.TEMPORAL_UI_URL || "http://localhost:8233";
 const taskQueue = "turtle";
 const client = new Client({ connection: await Connection.connect({ address }) });
+
+// all languages/skills, discovered once (recursively, incl. superpowers) — exposed
+// over MCP as skill://<name> resources (and, if SKILLS_AS_TOOLS, also as tools for
+// clients that don't surface MCP resources). These are reference material for the
+// SUB-AGENT that writes the Lua; the caller only needs the research_trigger description.
+function findSkills(dir: string): { name: string; path: string }[] {
+  const out: { name: string; path: string }[] = [];
+  if (!existsSync(dir)) return out;
+  for (const e of readdirSync(dir)) {
+    const p = join(dir, e);
+    if (!statSync(p).isDirectory()) continue;
+    if (existsSync(join(p, "SKILL.md"))) out.push({ name: e, path: join(p, "SKILL.md") });
+    out.push(...findSkills(p));
+  }
+  return out;
+}
+const seen = new Set<string>();
+const SKILLS = findSkills(join(REPO, "languages", "skills")).filter((s) => !seen.has(s.name) && seen.add(s.name));
+
+// extract the frontmatter `description:` (the skill's "when to use")
+function skillDescription(md: string): string {
+  const fm = md.match(/^---\n([\s\S]*?)\n---/);
+  if (!fm) return "";
+  const lines = fm[1].split("\n");
+  const i = lines.findIndex((l) => l.startsWith("description:"));
+  if (i < 0) return "";
+  const inline = lines[i].slice("description:".length).trim();
+  if (inline && !/^[>|][-+]?$/.test(inline)) return inline;
+  const cont: string[] = [];
+  for (let j = i + 1; j < lines.length; j++) {
+    if (/^\s+\S/.test(lines[j])) cont.push(lines[j].trim());
+    else if (lines[j].trim() === "") continue;
+    else break;
+  }
+  return cont.join(" ").trim();
+}
+
+// SKILLS_AS_TOOLS (opt-in): also expose each skill as a tool. Precomputed once.
+const SKILLS_AS_TOOLS = !!process.env.SKILLS_AS_TOOLS;
+const SKILL_TOOLS = SKILLS_AS_TOOLS
+  ? SKILLS.map((s) => {
+      const md = readFileSync(s.path, "utf8");
+      return {
+        toolName: "skill_" + s.name.replace(/[^a-z0-9]+/gi, "_"),
+        desc: (skillDescription(md) || `The ${s.name} skill.`).slice(0, 1000),
+        md,
+      };
+    })
+  : [];
 
 const TRIGGER_DESC =
   "Get a working, sim-verified Minecraft CC:Tweaked (ComputerCraft) TURTLE PROGRAM for ANY turtle task " +
@@ -96,6 +150,17 @@ function buildServer(): McpServer {
     return { content: [{ type: "text" as const, text: JSON.stringify(out) }], structuredContent: out };
   });
 
+  // skills over MCP: each SKILL.md as a skill://<name> resource (for the sub-agent's reference)
+  for (const { name, path } of SKILLS) {
+    server.registerResource(name, `skill://${name}`, { title: `${name} skill`, mimeType: "text/markdown" },
+      async (uri: URL) => ({ contents: [{ uri: uri.href, text: readFileSync(path, "utf8") }] }));
+  }
+  // skills as tools (opt-in via SKILLS_AS_TOOLS): the tool description is the skill's "when to use"
+  for (const { toolName, desc, md } of SKILL_TOOLS) {
+    server.registerTool(toolName, { description: desc, inputSchema: {} },
+      async () => ({ content: [{ type: "text" as const, text: md }] }));
+  }
+
   return server;
 }
 
@@ -117,8 +182,8 @@ if (httpPort) {
       await transport.handleRequest(req, res, body);
     });
   });
-  http.listen(Number(httpPort), "0.0.0.0", () => console.error(`[mcp] HTTP on :${httpPort}/mcp — research_trigger, research_status`));
+  http.listen(Number(httpPort), "0.0.0.0", () => console.error(`[mcp] HTTP on :${httpPort}/mcp — research_trigger, research_status, ${SKILLS.length} skill resources, ${SKILL_TOOLS.length} skill tools`));
 } else {
   await buildServer().connect(new StdioServerTransport());
-  console.error("[mcp] stdio ready — research_trigger, research_status");
+  console.error(`[mcp] stdio ready — research_trigger, research_status, ${SKILLS.length} skill resources, ${SKILL_TOOLS.length} skill tools`);
 }
