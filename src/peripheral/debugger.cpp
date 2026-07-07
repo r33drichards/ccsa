@@ -627,17 +627,25 @@ static int debugger_lib_useDAP(lua_State *L) {
     lastCFunction = __func__;
     lua_getfield(L, LUA_REGISTRYINDEX, "_debugger");
     debugger * dbg = (debugger*)lua_touserdata(L, -1);
+#ifdef __EMSCRIPTEN__
+    (void)dbg; lua_pushboolean(L, false); // no DAP (Poco::Net) in the wasm build
+#else
     lua_pushboolean(L, dynamic_cast<debug_adapter*>(dbg) != NULL);
+#endif
     return 1;
 }
 
 static int debugger_lib_sendDAPData(lua_State *L) {
     lastCFunction = __func__;
     lua_getfield(L, LUA_REGISTRYINDEX, "_debugger");
+#ifdef __EMSCRIPTEN__
+    return 0; // no DAP (Poco::Net) in the wasm build
+#else
     debug_adapter * dbg = dynamic_cast<debug_adapter*>((debugger*)lua_touserdata(L, -1));
     if (dbg == NULL) return 0;
     dbg->sendData(checkstring(L, 1));
     return 0;
+#endif
 }
 
 static int debugger_startupCode(lua_State *L) {

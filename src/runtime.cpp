@@ -29,6 +29,7 @@
 #include "terminal/RawTerminal.hpp"
 #include "terminal/HardwareSDLTerminal.hpp"
 #include "termsupport.hpp"
+#include "scheduler.hpp"
 #ifdef WIN32
 #define R_OK 0x04
 #define W_OK 0x02
@@ -230,6 +231,7 @@ void queueEvent(Computer *comp, const event_provider& p, void* data) {
         comp->event_provider_queue.push(std::make_pair(p, data));
     }
     comp->event_lock.notify_all();
+    if (singleThreadScheduler) schedulerWake(comp);
 }
 
 int getNextEvent(lua_State *L, const std::string& filter) {
@@ -266,11 +268,21 @@ int getNextEvent(lua_State *L, const std::string& filter) {
                 }
             }
             if (computer->eventQueue.empty()) {
-                std::mutex m;
-                std::unique_lock<std::mutex> l(m);
-                while (computer->running == 1 && !termHasEvent(computer)) 
-                    computer->event_lock.wait_for(l, std::chrono::seconds(5), [computer]()->bool{return termHasEvent(computer) || computer->running != 1;});
-                if (computer->running != 1) return 0;
+                if (singleThreadScheduler) {
+                    // Single-thread cooperative path: instead of blocking this
+                    // thread, hand control back to the scheduler. We are resumed
+                    // once an event lands (modem/timer/queueEvent wakes us) or
+                    // running changes.
+                    while (computer->running == 1 && !termHasEvent(computer))
+                        schedulerYield();
+                    if (computer->running != 1) return 0;
+                } else {
+                    std::mutex m;
+                    std::unique_lock<std::mutex> l(m);
+                    while (computer->running == 1 && !termHasEvent(computer))
+                        computer->event_lock.wait_for(l, std::chrono::seconds(5), [computer]()->bool{return termHasEvent(computer) || computer->running != 1;});
+                    if (computer->running != 1) return 0;
+                }
             }
         } while (computer->eventQueue.empty());
         ev = computer->eventQueue.front();
@@ -303,7 +315,9 @@ int getNextEvent(lua_State *L, const std::string& filter) {
         queueTask([computer](void*)->void*{
 #endif
         if (computer->eventTimeout != 0) SDL_RemoveTimer(computer->eventTimeout);
-        if (config.abortTimeout > 0 || config.standardsMode) computer->eventTimeout = SDL_AddTimer(config.standardsMode ? 7000 : config.abortTimeout, eventTimeoutEvent, computer);
+        // The abort-timeout watchdog uses an SDL timer thread; skip it in the
+        // single-thread cooperative path (no wall clock, no timer thread).
+        if (!singleThreadScheduler && (config.abortTimeout > 0 || config.standardsMode)) computer->eventTimeout = SDL_AddTimer(config.standardsMode ? 7000 : config.abortTimeout, eventTimeoutEvent, computer);
 #ifdef __EMSCRIPTEN__
         return NULL;}, NULL);
 #endif

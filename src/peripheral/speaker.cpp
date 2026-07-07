@@ -852,7 +852,7 @@ void speakerInit() {
     empty_chunk = Mix_QuickLoad_RAW(empty_audio, sizeof(empty_audio));
     Mix_QuerySpec(&AudioSpec::frequency, &AudioSpec::format, &AudioSpec::channelCount);
     speaker::sampleSize = (SDL_AUDIO_BITSIZE(AudioSpec::format)/8)*AudioSpec::channelCount;
-#ifndef STANDALONE_ROM
+#if !defined(STANDALONE_ROM) && !defined(__EMSCRIPTEN__)
     std::error_code e;
     if (fs::is_directory(getROMPath() / "sounds", e)) {
         for (const auto& dir : fs::directory_iterator(getROMPath() / "sounds", e)) {

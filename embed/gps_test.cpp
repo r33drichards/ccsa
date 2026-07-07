@@ -26,6 +26,22 @@
 
 #include <SDL2/SDL.h>
 #include <Computer.hpp>   // -Iapi : the Computer struct (we read comp->id)
+#ifdef __APPLE__
+#include <mach/mach.h>
+#endif
+
+// Count live OS threads in this process (proof that the scheduler path uses no
+// per-computer / pump / timer threads).
+static int countOSThreads() {
+#ifdef __APPLE__
+    thread_act_array_t threads; mach_msg_type_number_t n = 0;
+    if (task_threads(mach_task_self(), &threads, &n) != KERN_SUCCESS) return -1;
+    vm_deallocate(mach_task_self(), (vm_address_t)threads, n * sizeof(thread_act_t));
+    return (int)n;
+#else
+    return -1;
+#endif
+}
 
 namespace fs = std::filesystem;
 using path_t = std::filesystem::path;
@@ -42,6 +58,11 @@ extern path_t computerDir;
 extern std::unordered_map<int, path_t> customDataDirs;
 extern void setDistanceProvider(const std::function<double(const Computer*, const Computer*)>& func);
 Computer* startComputer(int id);
+
+// PATH 1: single-threaded cooperative scheduler (one OS thread, no per-computer
+// threads, no SDL timer thread, no detached pump thread).
+extern bool singleThreadScheduler;
+extern void schedulerRun(uint64_t maxVirtualMs, const std::function<bool()>& stop);
 
 // Globals that main.cpp defines and the rest of the emulator references.
 // We link libcraftos2 (everything except main.o), so we must supply them here.
@@ -83,8 +104,13 @@ int main(int argc, char** argv) {
     computerDir = base / "computer";
     fs::create_directories(computerDir);
     config_init();
-    SDL_Init(SDL_INIT_TIMER);              // os.startTimer / sleep need SDL timers
     driveInit();
+
+    // Enable the cooperative single-thread path. Everything runs on THIS thread:
+    // computers are fibers, timers are a virtual clock. No SDL timer thread, no
+    // computer threads, no pump thread.
+    singleThreadScheduler = true;
+    mainThreadID = std::this_thread::get_id();
 
     // --- distance provider: Euclidean distance between computer positions -----
     setDistanceProvider([](const Computer* sender, const Computer* receiver) -> double {
@@ -128,33 +154,26 @@ int main(int argc, char** argv) {
         "print('CLIENT WROTE RESULT')\n"
         "os.shutdown()\n");
 
-    // Continuously pump the task queue. os.startTimer / sleep / gps.locate all
-    // schedule SDL timers via queueTask and block until the main thread runs
-    // them, so this pump must run independent of how many computers are alive
-    // (mainLoop() exits as soon as the computer list is momentarily empty).
-    std::thread loop([]() {
-        mainThreadID = std::this_thread::get_id();
-        while (true) { try { defaultPollEvents(); } catch (...) {} }
-    });
-    loop.detach();
-
-    // Start every computer at once -- concurrent boot must be robust now.
+    // Register every computer as a fiber (none run yet).
     for (int id = 0; id < 4; id++) startComputer(id);
     startComputer(4);
 
+    // Drive the cooperative scheduler on this single thread until the client
+    // writes its result (or the virtual clock would advance past 15s).
     fs::path res = computerDir / "4" / "result.txt";
+    schedulerRun(15000, [&]() -> bool {
+        if (!fs::exists(res)) return false;
+        std::ifstream in(res); std::string l; std::getline(in, l);
+        return !l.empty();
+    });
+
     std::string out = "(timeout)";
-    for (int i = 0; i < 150; i++) {                       // up to 15s
-        if (fs::exists(res)) {
-            std::ifstream in(res);
-            std::getline(in, out);
-            if (!out.empty()) break;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    }
+    if (fs::exists(res)) { std::ifstream in(res); std::getline(in, out); if (out.empty()) out = "(timeout)"; }
 
     bool pass = (out == "3,4,5");
-    std::cout << "\nGPS CLIENT RESULT: " << out << "   (expected 3,4,5)\n";
+    std::cout << "\nOS THREADS (incl. main): " << countOSThreads()
+              << "  [single-thread cooperative scheduler: no computer/pump/timer threads]\n";
+    std::cout << "GPS CLIENT RESULT: " << out << "   (expected 3,4,5)\n";
     std::cout << (pass ? "GPS_PROOF: PASS" : "GPS_PROOF: FAIL") << std::endl;
     std::cout.flush();
     _exit(pass ? 0 : 1);                                  // emulator threads still live
