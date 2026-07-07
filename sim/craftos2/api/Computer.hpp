@@ -143,6 +143,7 @@ private:
     friend Computer* startComputer(int id);
     friend void showReleaseNotes();
     friend void* computerThread(void* data);
+    friend void schedulerDeleteComputer(Computer* comp);
     friend void debuggerThread(Computer * comp, void * dbgv, std::string side);
     friend void* releaseNotesThread(void* data);
     friend class debugger;

@@ -56,3 +56,4 @@ vcpkg_installed
 
 # rust build
 /mcp/target/
+/embed/ccsim_test

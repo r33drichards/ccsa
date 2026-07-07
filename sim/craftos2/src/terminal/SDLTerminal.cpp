@@ -60,12 +60,15 @@ static int nextWindowID = 1;
 #ifdef __EMSCRIPTEN__
 
 extern "C" {
-    void EMSCRIPTEN_KEEPALIVE nextRenderTarget() {
+    // NB: renamed from next/previousRenderTarget to avoid clashing with the
+    // inline helpers of the same name in termsupport.hpp (these are JS-exported
+    // web-UI controls, unused by the headless build).
+    void EMSCRIPTEN_KEEPALIVE jsNextRenderTarget() {
         if (++renderTarget == renderTargets.end()) renderTarget = renderTargets.begin();
         (*renderTarget)->changed = true;
     }
 
-    void EMSCRIPTEN_KEEPALIVE previousRenderTarget() {
+    void EMSCRIPTEN_KEEPALIVE jsPreviousRenderTarget() {
         if (renderTarget == renderTargets.begin()) renderTarget = renderTargets.end();
         renderTarget--;
         (*renderTarget)->changed = true;

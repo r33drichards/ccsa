@@ -12,8 +12,10 @@
 #include <sstream>
 #include <Computer.hpp>
 #include <dirent.h>
+#ifndef __EMSCRIPTEN__
 #include <Poco/Base64Decoder.h>
 #include <Poco/Base64Encoder.h>
+#endif
 #include <sys/stat.h>
 #include <FileEntry.hpp>
 #include "platform.hpp"
@@ -82,6 +84,33 @@ void load_library(Computer *comp, lua_State *L, const library_t& lib) {
     if (lib.init != NULL) lib.init(comp);
 }
 
+#ifdef __EMSCRIPTEN__
+// Standalone base64 for the headless WebAssembly build (no Poco).
+static const char b64_table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+std::string b64encode(const std::string& orig) {
+    std::string out;
+    int val = 0, bits = -6;
+    for (unsigned char c : orig) {
+        val = (val << 8) + c; bits += 8;
+        while (bits >= 0) { out.push_back(b64_table[(val >> bits) & 0x3F]); bits -= 6; }
+    }
+    if (bits > -6) out.push_back(b64_table[((val << 8) >> (bits + 8)) & 0x3F]);
+    while (out.size() % 4) out.push_back('=');
+    return out;
+}
+std::string b64decode(const std::string& orig) {
+    static int T[256]; static bool init = false;
+    if (!init) { for (int i = 0; i < 256; i++) T[i] = -1; for (int i = 0; i < 64; i++) T[(unsigned char)b64_table[i]] = i; init = true; }
+    std::string out;
+    int val = 0, bits = -8;
+    for (unsigned char c : orig) {
+        if (T[c] == -1) continue;
+        val = (val << 6) + T[c]; bits += 6;
+        if (bits >= 0) { out.push_back(char((val >> bits) & 0xFF)); bits -= 8; }
+    }
+    return out;
+}
+#else
 std::string b64encode(const std::string& orig) {
     std::stringstream ss;
     Poco::Base64Encoder enc(ss);
@@ -97,6 +126,7 @@ std::string b64decode(const std::string& orig) {
     std::copy(std::istreambuf_iterator<char>(dec), std::istreambuf_iterator<char>(), std::ostreambuf_iterator<char>(ss));
     return ss.str();
 }
+#endif
 
 std::vector<std::string> split(const std::string& strToSplit, const char * delims) {
     std::vector<std::string> retval;

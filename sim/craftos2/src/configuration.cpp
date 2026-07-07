@@ -11,7 +11,9 @@
 #include <fstream>
 #include <unordered_map>
 #include <configuration.hpp>
+#ifndef __EMSCRIPTEN__
 #include <Poco/JSON/JSONException.h>
+#endif
 #include "platform.hpp"
 #include "runtime.hpp"
 #include "terminal/SDLTerminal.hpp"
@@ -41,8 +43,13 @@ struct computer_configuration getComputerConfig(int id) {
     if (!in.is_open()) return cfg;
     if (in.peek() == std::ifstream::traits_type::eof()) { in.close(); return cfg; } // treat an empty file as if it didn't exist in the first place
     Value root;
-    Poco::JSON::Object::Ptr p;
-    try { p = root.parse(in); } catch (Poco::JSON::JSONException &e) {
+    try {
+#ifdef __EMSCRIPTEN__
+        root.parse(in);
+    }
+#else
+        Poco::JSON::Object::Ptr p = root.parse(in); (void)p;
+    } catch (Poco::JSON::JSONException &e) {
         cfg.loadFailure = true;
         showMessage("An error occurred while parsing the per-computer configuration file for computer " + std::to_string(id) + ": " + e.message() + ". The current session's config will be reset to default, and any changes made will not be saved.");
         in.close();
@@ -52,7 +59,9 @@ struct computer_configuration getComputerConfig(int id) {
         showMessage("An error occurred while parsing the per-computer configuration file for computer " + std::to_string(id) + ": " + e.message() + ". The current session's config will be reset to default, and any changes made will not be saved.");
         in.close();
         return cfg;
-    }catch (std::exception &e) {
+    }
+#endif
+    catch (std::exception &e) {
         cfg.loadFailure = true;
         showMessage("An error occurred while parsing the per-computer configuration file for computer " + std::to_string(id) + ": " + e.what() + ". The current session's config will be reset to default, and any changes made will not be saved.");
         in.close();
@@ -154,7 +163,9 @@ std::unordered_map<std::string, std::pair<int, int> > configSettings = {
 
 const std::string hiddenOptions[] = {"customFontPath", "customFontScale", "customCharScale", "skipUpdate", "lastVersion", "pluginData", "http_proxy_server", "http_proxy_port", "cliControlKeyMode", "serverMode", "romReadOnly"};
 
+#ifndef __EMSCRIPTEN__
 std::unordered_map<std::string, Poco::Dynamic::Var> unknownOptions;
+#endif
 
 void config_init() {
     std::error_code e;
@@ -242,9 +253,12 @@ void config_init() {
     std::ifstream in(getBasePath() / "config" / "global.json");
     if (!in.is_open()) { onboardingMode = 1; return; }
     Value root;
-    Poco::JSON::Object::Ptr p;
     try {
-        p = root.parse(in);
+#ifdef __EMSCRIPTEN__
+        root.parse(in);
+    }
+#else
+        Poco::JSON::Object::Ptr p = root.parse(in); (void)p;
     } catch (Poco::JSON::JSONException &e) {
         configLoadError = true;
         showMessage("An error occurred while parsing the global configuration file: " + e.message() + ". The current session's config will be reset to default, and any changes made will not be saved.");
@@ -255,7 +269,9 @@ void config_init() {
         showMessage("An error occurred while parsing the global configuration file: " + e.message() + ". The current session's config will be reset to default, and any changes made will not be saved.");
         in.close();
         return;
-    } catch (std::exception &e) {
+    }
+#endif
+    catch (std::exception &e) {
         configLoadError = true;
         showMessage("An error occurred while parsing the global configuration file: " + std::string(e.what()) + ". The current session's config will be reset to default, and any changes made will not be saved.");
         in.close();
@@ -270,6 +286,7 @@ void config_init() {
     try {
         readConfigSetting(http_enable, Bool);
         readConfigSetting(mount_mode, Int);
+#ifndef __EMSCRIPTEN__
         if (root.isMember("http_whitelist")) {
             config.http_whitelist.clear();
             for (auto it = root["http_whitelist"].arrayBegin(); it != root["http_whitelist"].arrayEnd(); ++it)
@@ -295,6 +312,7 @@ void config_init() {
             for (auto it = root["mounter_no_ask"].arrayBegin(); it != root["mounter_no_ask"].arrayEnd(); ++it)
                 config.mounter_no_ask.push_back(it->toString());
         }
+#endif
         readConfigSetting(disable_lua51_features, Bool);
         readConfigSetting(default_computer_settings, String);
         readConfigSetting(logErrors, Bool);
@@ -356,12 +374,16 @@ void config_init() {
             if (configSettings.find(e.first) == configSettings.end() && std::find(hiddenOptions, hiddenOptions + (sizeof(hiddenOptions) / sizeof(std::string)), e.first) == hiddenOptions + (sizeof(hiddenOptions) / sizeof(std::string)))
                 unknownOptions.insert(e);
 #endif
-    } catch (Poco::Exception &e) {
+    }
+#ifndef __EMSCRIPTEN__
+    catch (Poco::Exception &e) {
         configLoadError = true;
         showMessage("An error occurred while reading the global configuration file: " + e.message() + ". The current session's config will be partially loaded, and any changes made will not be saved.");
         in.close();
         return;
-    } catch (std::exception &e) {
+    }
+#endif
+    catch (std::exception &e) {
         configLoadError = true;
         showMessage("An error occurred while reading the global configuration file: " + std::string(e.what()) + ". The current session's config will be partially loaded, and any changes made will not be saved.");
         in.close();
@@ -437,7 +459,9 @@ void config_save() {
     Value pluginRoot;
     for (const auto& e : config.pluginData) pluginRoot[e.first] = e.second;
     root["pluginData"] = pluginRoot;
+#ifndef __EMSCRIPTEN__
     for (const auto& opt : unknownOptions) root[opt.first] = opt.second;
+#endif
     std::ofstream out(getBasePath() / "config"/"global.json");
     if (out.is_open()) {
         out << root;

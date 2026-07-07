@@ -11,6 +11,7 @@
 #include <Computer.hpp>
 #include "../main.hpp"
 #include "../runtime.hpp"
+#include "../scheduler.hpp"
 #include "../util.hpp"
 
 static int os_getComputerID(lua_State *L) { lastCFunction = __func__; lua_pushinteger(L, get_comp(L)->id); return 1; }
@@ -44,12 +45,14 @@ static int os_queueEvent(lua_State *L) {
     else lua_xmove(L, param, count);
     computer->eventQueue.push(name);
     computer->event_lock.notify_all();
+    if (singleThreadScheduler) schedulerWake(computer);
     return 0;
 }
 
 static int os_clock(lua_State *L) {
     lastCFunction = __func__;
     Computer * computer = get_comp(L);
+    if (singleThreadScheduler) { lua_pushnumber(L, (double)schedulerNow() / 1000.0); return 1; }
     lua_pushnumber(L, (double)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now() - computer->system_start).count() / 1000.0);
     return 1;
 }
@@ -126,12 +129,19 @@ static Uint32 notifyEvent(Uint32 interval, void* param) {
 int os_startTimer(lua_State *L) {
     lastCFunction = __func__;
     Computer * computer = get_comp(L);
+    lua_Number _time = luaL_checknumber(L, 1);
+    if (_time < 0.001) _time = 0.001;
+    if (singleThreadScheduler) {
+        uint64_t ms = (uint64_t)(_time * 1000.0);
+        if (ms == 0) ms = 1;
+        if (config.standardsMode) { if (ms < 50) ms = 50; else ms = (uint64_t)ceil(ms / 50.0) * 50; }
+        lua_pushinteger(L, schedulerAddTimer(ms, computer, false));
+        return 1;
+    }
     struct timer_data_t * data = new struct timer_data_t;
     data->comp = computer;
     data->lock = new std::mutex;
     data->isAlarm = false;
-    lua_Number _time = luaL_checknumber(L, 1);
-    if (_time < 0.001) _time = 0.001;
     queueTask([_time](void*a)->void* {
         struct timer_data_t * data = (timer_data_t*)a;
         Uint32 time = (Uint32)(_time * 1000);
@@ -160,6 +170,7 @@ int os_startTimer(lua_State *L) {
 int os_cancelTimer(lua_State *L) {
     lastCFunction = __func__;
     const SDL_TimerID id = (SDL_TimerID)luaL_checkinteger(L, 1);
+    if (singleThreadScheduler) { schedulerCancelTimer((int)id); return 0; }
     timer_data_t * data;
     {
         LockGuard lock(runningTimerData);
@@ -293,6 +304,12 @@ static int os_setAlarm(lua_State *L) {
     if (time >= current_time) delta_time = time - current_time;
     else delta_time = (time + 24.0) - current_time;
     Uint32 real_time = (Uint32)(delta_time * 50000.0);
+    if (singleThreadScheduler) {
+        uint64_t ms = real_time;
+        if (config.standardsMode) ms = (uint64_t)ceil(ms / 50.0) * 50;
+        lua_pushinteger(L, schedulerAddTimer(ms + 3, computer, true));
+        return 1;
+    }
     struct timer_data_t * data = new struct timer_data_t;
     data->comp = computer;
     data->lock = new std::mutex;
@@ -315,6 +332,7 @@ static int os_setAlarm(lua_State *L) {
 static int os_cancelAlarm(lua_State *L) {
     lastCFunction = __func__;
     const SDL_TimerID id = (SDL_TimerID)luaL_checkinteger(L, 1);
+    if (singleThreadScheduler) { schedulerCancelTimer((int)id); return 0; }
     timer_data_t * data;
     {
         LockGuard lock(runningTimerData);

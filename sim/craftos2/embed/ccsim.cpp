@@ -27,10 +27,11 @@
 #include <cstring>
 #include <cstdlib>
 
-#include <Poco/JSON/Parser.h>
-#include <Poco/JSON/Object.h>
-#include <Poco/JSON/Array.h>
-#include <Poco/Dynamic/Var.h>
+// JSON: use the vendored single-header nlohmann/json instead of Poco::JSON so
+// the headless cc_run / GPS path carries no Poco dependency. This lets the
+// WebAssembly build avoid linking Poco entirely (and works identically for the
+// native build). See embed/vendor/json.hpp.
+#include "vendor/json.hpp"
 
 #include <SDL2/SDL.h>
 #include <Computer.hpp>
@@ -49,6 +50,12 @@ extern path_t computerDir;
 extern std::unordered_map<int, path_t> customDataDirs;
 extern void setDistanceProvider(const std::function<double(const Computer*, const Computer*)>& func);
 Computer* startComputer(int id);
+
+// PATH 1: single-threaded cooperative scheduler.
+extern bool singleThreadScheduler;
+extern void schedulerRun(uint64_t maxVirtualMs, const std::function<bool()>& stop);
+extern void schedulerWake(Computer* comp);
+extern void schedulerSetIdleCallback(const std::function<void()>& cb);
 
 // --- globals that main.cpp defines and the rest of the emulator references ----
 class Terminal;
@@ -69,6 +76,10 @@ struct Vec3 { double x, y, z; };
 std::map<int, Vec3> g_pos;
 std::mutex g_pos_mutex;
 std::once_flag g_init_once;
+// PATH 1 is single-threaded: serialize all sim calls onto one thread (the
+// scheduler + ucontext fibers are not safe to drive from multiple threads at
+// once). Each call designates itself the "main" thread while it holds this.
+std::mutex g_run_mutex;
 
 void ensure_init(const std::string& rom, const std::string& base) {
     // call_once blocks every caller until the first finishes initializing, so
@@ -84,7 +95,6 @@ void ensure_init(const std::string& rom, const std::string& base) {
     computerDir = basep / "computer";
     fs::create_directories(computerDir);
     config_init();
-    SDL_Init(SDL_INIT_TIMER);
     driveInit();
     setDistanceProvider([](const Computer* a, const Computer* b) -> double {
         std::lock_guard<std::mutex> lk(g_pos_mutex);
@@ -93,11 +103,11 @@ void ensure_init(const std::string& rom, const std::string& base) {
         double dx = i->second.x - j->second.x, dy = i->second.y - j->second.y, dz = i->second.z - j->second.z;
         return std::sqrt(dx*dx + dy*dy + dz*dz);
     });
-    // Continuous task-queue pump (timers/sleep/gps schedule via queueTask).
-    std::thread([]() {
-        mainThreadID = std::this_thread::get_id();
-        while (true) { try { defaultPollEvents(); } catch (...) {} }
-    }).detach();
+    // PATH 1: cooperative single-thread scheduler. No detached pump thread, no
+    // SDL timer thread, no per-computer threads. Everything is driven from the
+    // calling thread via schedulerRun(); this thread becomes the "main" thread.
+    singleThreadScheduler = true;
+    mainThreadID = std::this_thread::get_id();
     });
 }
 
@@ -178,7 +188,28 @@ std::string postlude(bool turtle) {
 }
 } // namespace
 
+// --- WebAssembly return-value side channel -----------------------------------
+// Emscripten maps the cooperative fibers onto Asyncify: a fiber swap unwinds the
+// current call out to the JS boundary and later rewinds it. Because of that, the
+// *return value* of an export that performs a fiber swap (cc_run /
+// cc_gps_selftest) cannot propagate back through a direct ccall — JS only sees
+// the Asyncify unwind sentinel (0/NULL). The full computation still completes
+// synchronously within the call (driven by Asyncify's rewind before the call
+// returns to JS), so we additionally stash each result in a global and expose a
+// plain getter the host reads right after the call. The C ABI of cc_run /
+// cc_gps_selftest / cc_free is unchanged; native builds ignore the side channel.
+#ifdef __EMSCRIPTEN__
+static int g_last_gps_result = 0;
+static char* g_last_run_result = nullptr;
+#endif
+
 extern "C" {
+
+#ifdef __EMSCRIPTEN__
+// Read back the most recent cc_gps_selftest() / cc_run() result (see above).
+int cc_gps_result(void) { return g_last_gps_result; }
+char* cc_run_result(void) { return g_last_run_result; }
+#endif
 
 // Unified runtime: boot an arbitrary set of networked CC computers / turtles
 // from a JSON spec and return each node's emit() output as JSON.
@@ -197,21 +228,23 @@ extern "C" {
 // returns (caller frees with cc_free):
 //   { "net": N, "nodes": [ { "label", "id", "output", "turtle": bool } ] }
 char* cc_run(const char* spec_json) {
+    std::lock_guard<std::mutex> runlk(g_run_mutex);
     std::string rom;
-    Poco::JSON::Object::Ptr spec;
+    nlohmann::json spec;
     try {
-        Poco::JSON::Parser parser;
-        spec = parser.parse(std::string(spec_json ? spec_json : "{}"))
-                   .extract<Poco::JSON::Object::Ptr>();
+        spec = nlohmann::json::parse(std::string(spec_json ? spec_json : "{}"));
+        if (!spec.is_object()) return strdup("{\"error\":\"invalid JSON spec\"}");
     } catch (...) {
         return strdup("{\"error\":\"invalid JSON spec\"}");
     }
-    rom = spec->optValue<std::string>("rom", getenv("CRAFTOS_ROM") ? getenv("CRAFTOS_ROM") : "");
+    rom = spec.value("rom", getenv("CRAFTOS_ROM") ? getenv("CRAFTOS_ROM") : "");
     ensure_init(rom, "/tmp/ccsim-run");
+    mainThreadID = std::this_thread::get_id();
 
-    int timeout_ms = spec->optValue<int>("timeout_ms", 15000);
-    Poco::JSON::Array::Ptr nodes = spec->getArray("nodes");
-    if (!nodes) return strdup("{\"error\":\"spec.nodes must be an array\"}");
+    int timeout_ms = spec.value("timeout_ms", 15000);
+    if (!spec.contains("nodes") || !spec["nodes"].is_array())
+        return strdup("{\"error\":\"spec.nodes must be an array\"}");
+    nlohmann::json& nodes = spec["nodes"];
 
     static std::atomic<int> seq{0};
     int n = seq.fetch_add(1);
@@ -222,20 +255,20 @@ char* cc_run(const char* spec_json) {
     struct NodeRec { int id; std::string label; bool collect; bool turtle; Computer* comp; };
     std::vector<NodeRec> recs;
 
-    for (size_t i = 0; i < nodes->size(); i++) {
-        Poco::JSON::Object::Ptr nd = nodes->getObject(i);
-        if (!nd) continue;
+    for (size_t i = 0; i < nodes.size(); i++) {
+        nlohmann::json& nd = nodes[i];
+        if (!nd.is_object()) continue;
         int id = base + (int)i + 1;
-        std::string label = nd->optValue<std::string>("label", "node" + std::to_string(i));
-        std::string program = nd->optValue<std::string>("program", "");
-        bool collect = nd->optValue<bool>("collect", false);
+        std::string label = nd.value("label", "node" + std::to_string(i));
+        std::string program = nd.value("program", "");
+        bool collect = nd.value("collect", false);
         Vec3 pos{0, 0, 0};
-        if (nd->isArray("position")) {
-            auto a = nd->getArray("position");
-            if (a->size() >= 3) { pos.x = a->getElement<double>(0); pos.y = a->getElement<double>(1); pos.z = a->getElement<double>(2); }
+        if (nd.contains("position") && nd["position"].is_array()) {
+            auto& a = nd["position"];
+            if (a.size() >= 3) { pos.x = a[0].get<double>(); pos.y = a[1].get<double>(); pos.z = a[2].get<double>(); }
         }
-        bool hasWorld = nd->has("world") && !nd->isNull("world");
-        bool hasWorldLua = nd->has("world_lua") && !nd->isNull("world_lua");
+        bool hasWorld = nd.contains("world") && !nd["world"].is_null();
+        bool hasWorldLua = nd.contains("world_lua") && !nd["world_lua"].is_null();
         bool turtle = hasWorld || hasWorldLua;
 
         fs::path d = computerDir / std::to_string(id);
@@ -245,11 +278,9 @@ char* cc_run(const char* spec_json) {
             std::ofstream(d / "engine.lua") << engineSrc;
             if (hasWorldLua) {
                 // a Lua chunk that returns the world table (may carry functions)
-                std::ofstream(d / "world.lua") << nd->getValue<std::string>("world_lua");
+                std::ofstream(d / "world.lua") << nd["world_lua"].get<std::string>();
             } else {
-                std::ostringstream wj;
-                nd->getObject("world")->stringify(wj);
-                std::ofstream(d / "world.json") << wj.str();
+                std::ofstream(d / "world.json") << nd["world"].dump();
             }
         }
         Computer* comp = spawn(id, pos, prelude(net, turtle) + "\n" + program + "\n" + postlude(turtle));
@@ -276,40 +307,43 @@ char* cc_run(const char* spec_json) {
             }
         }
     };
-    while (waited < timeout_ms && !allCollected()) {
-        applyMoves();
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        waited += 100;
-    }
+    (void)waited;
+    // Apply world moves at every quiescent point, so a node that calls setpos()
+    // and sleeps has its new position reflected before the next locate.
+    schedulerSetIdleCallback(applyMoves);
+    schedulerRun((uint64_t)timeout_ms, [&]() -> bool { return allCollected(); });
+    schedulerSetIdleCallback(nullptr);
     applyMoves();
 
     // Tear down every computer this run spawned. Programs like `gps host` loop
-    // forever, so without this each run would leak threads/memory into the
-    // shared emulator and eventually hang it under concurrent use. Setting
-    // running=0 + notifying makes each computer thread exit and queue its own
-    // free (the task pump reclaims it).
+    // forever; stop them and let the scheduler run each fiber's teardown to DONE
+    // (which frees the computer and unregisters its modem from the network).
     for (auto& r : recs) {
         if (r.comp) {
             r.comp->running = 0;
             r.comp->event_lock.notify_all();
+            schedulerWake(r.comp);
         }
     }
+    schedulerRun(1000, []() -> bool { return false; });
 
-    Poco::JSON::Object res;
-    res.set("net", net);
-    Poco::JSON::Array arr;
+    nlohmann::json res;
+    res["net"] = net;
+    nlohmann::json arr = nlohmann::json::array();
     for (auto& r : recs) {
-        Poco::JSON::Object o;
-        o.set("label", r.label);
-        o.set("id", r.id);
-        o.set("turtle", r.turtle);
-        o.set("output", readFile(computerDir / std::to_string(r.id) / "out"));
-        arr.add(o);
+        nlohmann::json o;
+        o["label"] = r.label;
+        o["id"] = r.id;
+        o["turtle"] = r.turtle;
+        o["output"] = readFile(computerDir / std::to_string(r.id) / "out");
+        arr.push_back(o);
     }
-    res.set("nodes", arr);
-    std::ostringstream os;
-    res.stringify(os);
-    return strdup(os.str().c_str());
+    res["nodes"] = arr;
+    char* out = strdup(res.dump().c_str());
+#ifdef __EMSCRIPTEN__
+    g_last_run_result = out;
+#endif
+    return out;
 }
 
 void cc_free(char* p) { free(p); }
@@ -317,7 +351,9 @@ void cc_free(char* p) { free(p); }
 // Run the canonical GPS scenario: 4 hosts + 1 client, verify trilateration.
 // Returns 1 on PASS, 0 on FAIL/timeout.
 int cc_gps_selftest(const char* rom) {
+    std::lock_guard<std::mutex> runlk(g_run_mutex);
     ensure_init(rom ? rom : "", "/tmp/ccsim-selftest");
+    mainThreadID = std::this_thread::get_id();
 
     // Per-call id base AND modem netID so calls/sessions are isolated: each
     // call's computers form their own rednet (modem::transmit only delivers
@@ -334,10 +370,11 @@ int cc_gps_selftest(const char* rom) {
             net, x, y, z);
         return std::string(buf);
     };
-    spawn(b + 0, {0, 0, 0}, hostStartup(0, 0, 0));
-    spawn(b + 1, {10, 0, 0}, hostStartup(10, 0, 0));
-    spawn(b + 2, {0, 10, 0}, hostStartup(0, 10, 0));
-    spawn(b + 3, {0, 0, 10}, hostStartup(0, 0, 10));
+    std::vector<Computer*> comps;
+    comps.push_back(spawn(b + 0, {0, 0, 0}, hostStartup(0, 0, 0)));
+    comps.push_back(spawn(b + 1, {10, 0, 0}, hostStartup(10, 0, 0)));
+    comps.push_back(spawn(b + 2, {0, 10, 0}, hostStartup(0, 10, 0)));
+    comps.push_back(spawn(b + 3, {0, 0, 10}, hostStartup(0, 0, 10)));
     {
         char buf[512];
         snprintf(buf, sizeof(buf),
@@ -348,18 +385,30 @@ int cc_gps_selftest(const char* rom) {
             "if x then f.write(math.floor(x+0.5)..','..math.floor(y+0.5)..','..math.floor(z+0.5))\n"
             "else f.write('nil') end\n"
             "f.close()\n", net);
-        spawn(b + 4, {3, 4, 5}, buf);
+        comps.push_back(spawn(b + 4, {3, 4, 5}, buf));
     }
 
+    // Drive the cooperative scheduler on this thread until the client writes its
+    // result (virtual clock budget 20s).
     fs::path res = computerDir / std::to_string(b + 4) / "result.txt";
-    for (int i = 0; i < 200; i++) {                  // up to 20s
-        if (fs::exists(res)) {
-            std::ifstream in(res); std::string out; std::getline(in, out);
-            if (!out.empty()) return out == "3,4,5" ? 1 : 0;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    }
-    return 0;
+    auto haveResult = [&]() -> bool {
+        if (!fs::exists(res)) return false;
+        std::ifstream in(res); std::string l; std::getline(in, l); return !l.empty();
+    };
+    schedulerRun(20000, haveResult);
+
+    // Tear down the spawned computers (the `gps host` loops never return on
+    // their own): stop them and let the scheduler run their teardown to DONE.
+    for (Computer* c : comps) if (c) { c->running = 0; c->event_lock.notify_all(); schedulerWake(c); }
+    schedulerRun(1000, []() -> bool { return false; });
+
+    std::string out;
+    if (fs::exists(res)) { std::ifstream in(res); std::getline(in, out); }
+    int result = out == "3,4,5" ? 1 : 0;
+#ifdef __EMSCRIPTEN__
+    g_last_gps_result = result;
+#endif
+    return result;
 }
 
 } // extern "C"

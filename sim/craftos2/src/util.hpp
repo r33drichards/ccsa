@@ -20,11 +20,17 @@ extern "C" {
 #include <mutex>
 #include <string>
 #include <vector>
+#ifdef __EMSCRIPTEN__
+// WebAssembly headless build: no Poco. The config JSON wrapper (Value) is
+// backed by nlohmann/json instead. See embed/vendor/json.hpp.
+#include "../embed/vendor/json.hpp"
+#else
 #include <Poco/JSON/JSON.h>
 #include <Poco/JSON/Parser.h>
 #include <Poco/JSON/Object.h>
 #include <Poco/JSON/Array.h>
 #include <Poco/Net/HTTPResponse.h>
+#endif
 #include <Computer.hpp>
 #include <Terminal.hpp>
 
@@ -85,6 +91,42 @@ public:
     I end() const {return back;}
 };
 
+#ifdef __EMSCRIPTEN__
+// nlohmann/json-backed drop-in for the headless WebAssembly build. Implements
+// the read-side surface the config loader uses (the write path — config_save /
+// setComputerConfig — is stubbed out for wasm, so write ops are best-effort).
+class Value {
+    nlohmann::json obj;
+public:
+    Value() : obj(nlohmann::json::object()) {}
+    Value(const nlohmann::json& o) : obj(o) {}
+    template<typename T>
+    Value(const std::vector<T>& arr) : obj(arr) {}
+    Value operator[](const std::string& key) {
+        if (obj.is_object() && obj.contains(key)) return Value(obj[key]);
+        return Value(nlohmann::json());
+    }
+    void operator=(int v) { obj = v; }
+    void operator=(bool v) { obj = v; }
+    void operator=(const char * v) { obj = std::string(v); }
+    void operator=(const std::string& v) { obj = v; }
+    template<typename T>
+    void operator=(const std::vector<T>& v) { obj = v; }
+    void operator=(const Value& v) { obj = v.obj; }
+    bool asBool() { return obj.is_boolean() ? obj.get<bool>() : (obj.is_number() ? obj.get<double>() != 0 : false); }
+    int asInt() { return obj.is_number() ? obj.get<int>() : 0; }
+    float asFloat() { return obj.is_number() ? obj.get<float>() : 0.0f; }
+    std::string asString() { return obj.is_string() ? obj.get<std::string>() : (obj.is_null() ? std::string() : obj.dump()); }
+    bool isArray() { return obj.is_array(); }
+    bool isBoolean() { return obj.is_boolean(); }
+    bool isInt() { return obj.is_number_integer(); }
+    bool isString() { return obj.is_string(); }
+    bool isObject() { return obj.is_object(); }
+    bool isMember(std::string key) { return obj.is_object() && obj.contains(key); }
+    bool parse(std::istream& in) { in >> obj; return true; }
+    friend std::ostream& operator<<(std::ostream &out, Value &v) { out << v.obj.dump(4); return out; }
+};
+#else
 class Value {
     Poco::Dynamic::Var obj;
     Value* parent = NULL;
@@ -139,6 +181,7 @@ public:
     Poco::JSON::Object::ConstIterator begin() { try { return obj.extract<Poco::JSON::Object>().begin(); } catch (Poco::BadCastException &e) { return obj.extract<Poco::JSON::Object::Ptr>()->begin(); } }
     Poco::JSON::Object::ConstIterator end() { try { return obj.extract<Poco::JSON::Object>().end(); } catch (Poco::BadCastException &e) { return obj.extract<Poco::JSON::Object::Ptr>()->end(); } }
 };
+#endif
 
 // For get_comp
 struct lua_State {
@@ -205,7 +248,9 @@ extern std::vector<std::string> split(const std::string& strToSplit, const char 
 extern std::vector<std::wstring> split(const std::wstring& strToSplit, const wchar_t * delimeter);
 extern std::vector<path_t> split(const path_t& strToSplit, const path_t::value_type * delimeter);
 extern void load_library(Computer *comp, lua_State *L, const library_t& lib);
+#ifndef __EMSCRIPTEN__
 extern void HTTPDownload(const std::string& url, const std::function<void(std::istream*, Poco::Exception*, Poco::Net::HTTPResponse*)>& callback);
+#endif
 extern path_t fixpath(Computer *comp, std::string path, bool exists, bool addExt = true, std::string * mountPath = NULL, bool * isRoot = NULL);
 extern bool fixpath_ro(Computer *comp, std::string path);
 extern path_t fixpath_mkdir(Computer * comp, const std::string& path, bool md = true, std::string * mountPath = NULL);

@@ -23,6 +23,7 @@ extern "C" {
 #include "peripheral/computer.hpp"
 #include "platform.hpp"
 #include "runtime.hpp"
+#include "scheduler.hpp"
 #include "terminal/RawTerminal.hpp"
 #include "termsupport.hpp"
 
@@ -728,7 +729,8 @@ void runComputer(Computer * self, const path_t& bios_name, const std::string& bi
         }, NULL);
 #else
         if (self->eventTimeout != 0) SDL_RemoveTimer(self->eventTimeout);
-        if (config.abortTimeout > 0 || config.standardsMode) self->eventTimeout = SDL_AddTimer(::config.standardsMode ? 7000 : ::config.abortTimeout, eventTimeoutEvent, self);
+        // Skip the SDL-timer-backed abort watchdog under the cooperative scheduler.
+        if (!singleThreadScheduler && (config.abortTimeout > 0 || config.standardsMode)) self->eventTimeout = SDL_AddTimer(::config.standardsMode ? 7000 : ::config.abortTimeout, eventTimeoutEvent, self);
 #endif
         while (status == LUA_YIELD && self->running == 1) {
             status = lua_resume(self->coro, NULL, narg);
@@ -870,7 +872,9 @@ void* computerThread(void* data) {
 #else
             runComputer(comp, "bios.lua");
 #endif
-        } catch (Poco::Exception &e) {
+        }
+#ifndef __EMSCRIPTEN__
+        catch (Poco::Exception &e) {
             fprintf(stderr, "Uncaught exception while executing computer %d (last C function: %s): %s\n", comp->id, lastCFunction, e.displayText().c_str());
             queueTask([e](void*t)->void* {const std::string m = "Uh oh, an uncaught exception has occurred! Please report this to https://www.craftos-pc.cc/bugreport. When writing the report, include the following exception message: \"Poco exception on computer thread: " + e.displayText() + "\". The computer will now shut down.";  if (t != NULL) ((Terminal*)t)->showMessage(SDL_MESSAGEBOX_ERROR, "Uncaught Exception", m.c_str()); else if (selectedRenderer == 0 || selectedRenderer == 5) SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Uncaught Exception", m.c_str(), NULL); return NULL; }, comp->term);
             if (comp->L != NULL) {
@@ -889,7 +893,9 @@ void* computerThread(void* data) {
                 }
             }
             if (selectedRenderer == 1) returnValue = 1;
-        } catch (std::exception &e) {
+        }
+#endif
+        catch (std::exception &e) {
             fprintf(stderr, "Uncaught exception while executing computer %d (last C function: %s): %s\n", comp->id, lastCFunction, e.what());
             queueTask([e](void*t)->void* {const std::string m = std::string("Uh oh, an uncaught exception has occurred! Please report this to https://www.craftos-pc.cc/bugreport. When writing the report, include the following exception message: \"Exception on computer thread: ") + e.what() + "\". The computer will now shut down.";  if (t != NULL) ((Terminal*)t)->showMessage(SDL_MESSAGEBOX_ERROR, "Uncaught Exception", m.c_str()); else if (selectedRenderer == 0 || selectedRenderer == 5) SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Uncaught Exception", m.c_str(), NULL); return NULL; }, comp->term);
             if (comp->L != NULL) {
@@ -938,11 +944,14 @@ void* computerThread(void* data) {
 Computer * startComputer(int id) {
     Computer * comp;
     try {comp = new Computer(id);}
+#ifndef __EMSCRIPTEN__
     catch (Poco::Exception &e) {
         if ((selectedRenderer == 0 || selectedRenderer == 5) && !config.standardsMode) SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Failed to open computer", std::string("An error occurred while opening the computer session: " + e.displayText() + ". See https://www.craftos-pc.cc/docs/error-messages for more info.").c_str(), NULL);
         fprintf(stderr, "An error occurred while opening the computer session: %s\n", e.displayText().c_str());
         return NULL;
-    } catch (std::exception &e) {
+    }
+#endif
+    catch (std::exception &e) {
         if ((selectedRenderer == 0 || selectedRenderer == 5) && !config.standardsMode) SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Failed to open computer", std::string("An error occurred while opening the computer session: " + std::string(e.what()) + ". See https://www.craftos-pc.cc/docs/error-messages for more info.").c_str(), NULL);
         fprintf(stderr, "An error occurred while opening the computer session: %s\n", e.what());
         return NULL;
@@ -950,6 +959,12 @@ Computer * startComputer(int id) {
     {
         LockGuard lock(computers);
         computers->push_back(comp);
+    }
+    if (singleThreadScheduler) {
+        // Cooperative single-thread path: register the computer as a fiber with
+        // the scheduler instead of spawning a dedicated OS thread.
+        schedulerRegisterComputer(comp);
+        return comp;
     }
     std::thread * th = new std::thread(computerThread, comp);
     setThreadName(*th, "Computer " + std::to_string(id) + " Thread");
