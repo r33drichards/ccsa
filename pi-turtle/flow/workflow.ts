@@ -79,7 +79,7 @@ export async function researchWorkflow(input: ResearchInput, state?: LoopState):
     // "fetch failed" to Ollama) — a real infra failure, NOT a "did not pass" result. Let it
     // propagate so the workflow reports FAILED, instead of masking it as an empty best attempt.
     // (Budget/step exhaustion is the legitimate graceful path — see the while-condition + done().)
-    const a: acts.LlmOut = await callLlm({ messages: sendView(s.messages, s.summary), tools: TOOLS, model });
+    const a: acts.LlmOut = await callLlm({ messages: sendView(s.messages, s.summary), tools: TOOLS, model, step: s.step });
     s.tokens += a.tokens;
 
     s.messages.push(a.toolCalls.length

@@ -7,12 +7,18 @@
 //   runJs        - raw run_js passthrough, so the agent can inspect the sandbox itself
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { ApplicationFailure } from "@temporalio/activity";
+import { ApplicationFailure, Context } from "@temporalio/activity";
 import * as lang from "./mcp-languages.ts";
 import { validatorFromWorkCode, parseSim, skillSeedFiles, WORK_PROG, type SimResult } from "./sim.ts";
 import * as comp from "./compaction.ts";
-import { recordTokens, recordCall } from "./telemetry.ts";
+import { recordTokens, recordCall, emitLog } from "./telemetry.ts";
 import type { Env } from "./arena-object.ts";
+
+// this activity's Temporal workflow id, for tagging logs so a run's LLM output is
+// filterable per-workflow in Grafana/Loki. "" outside an activity context (e.g. tests).
+function wfId(): string {
+  try { return Context.current().info.workflowExecution.workflowId; } catch { return ""; }
+}
 
 // ── Ollama error classification (drives Temporal retry) ─────────────────────
 // The provider fails intermittently; distinguish transient (retry) from permanent (fail fast)
@@ -60,31 +66,79 @@ export async function openSandbox(workSession: string): Promise<{ seeded: number
 
 export type LlmOut = { content: string; toolCalls: { id: string; name: string; arguments: string }[]; tokens: number };
 
-// One completion. Env access is allowed in activities; Temporal owns retries.
-export async function callLlm(input: { messages: unknown[]; tools: unknown[]; model: string }): Promise<LlmOut> {
+// One completion, STREAMED. Env access is allowed in activities; Temporal owns retries.
+// We stream (stream:true + include_usage) so the assistant's text is tee'd to Loki as it
+// generates — tagged with the Temporal workflow id + step, so a run's reasoning is watchable
+// live in Grafana (Explore -> Loki: {service_name="turtle-research"} | workflow_id="turtle-…").
+// This also makes a slow completion visibly distinguishable from a hung one. Token usage
+// arrives in the final SSE chunk (verified include_usage is honored), so accounting is intact.
+export async function callLlm(input: { messages: unknown[]; tools: unknown[]; model: string; step?: number }): Promise<LlmOut> {
   const key = process.env.OLLAMA_API_KEY;
   const model = process.env.TURTLEFLOW_MODEL || input.model || "glm-5.2";
   if (!key) throw ApplicationFailure.nonRetryable("callLlm: OLLAMA_API_KEY not set", "LlmClientError");
   const url = `${OLLAMA_BASE}/chat/completions`;
+  const step = input.step ?? 0;
+  const attrs = { workflow_id: wfId(), kind: "llm", step };
   let r: Response;
   try {
     r = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-      body: JSON.stringify({ model, messages: input.messages, tools: input.tools, tool_choice: "auto", temperature: 0 }),
+      body: JSON.stringify({ model, messages: input.messages, tools: input.tools, tool_choice: "auto", temperature: 0, stream: true, stream_options: { include_usage: true } }),
       signal: AbortSignal.timeout(840000), // 14 min, just under the 15-min activity ceiling
     });
   } catch (e) { recordCall("completion", model, "error"); throw networkError("callLlm", url, e); }
   if (!r.ok) { recordCall("completion", model, "error"); throw httpError("callLlm", url, r.status, await r.text()); }
-  const j: any = await r.json();
-  recordTokens("completion", model, j.usage);
-  recordCall("completion", model, "ok");
-  const m = j.choices?.[0]?.message ?? {};
-  return {
-    content: m.content ?? "",
-    toolCalls: (m.tool_calls ?? []).map((tc: any) => ({ id: tc.id, name: tc.function?.name, arguments: tc.function?.arguments ?? "{}" })),
-    tokens: j.usage?.total_tokens ?? 0,
+  if (!r.body) { recordCall("completion", model, "error"); throw new Error("callLlm: streaming response had no body"); }
+
+  // parse the OpenAI SSE stream: accumulate assistant content + reassemble tool_call
+  // fragments (which arrive split across deltas, keyed by index), teeing text to Loki.
+  emitLog("info", `[step ${step}] llm call started (${model})`, attrs);
+  let content = "", emitted = 0, usage: any = null;
+  const toolAcc: Record<number, { id: string; name: string; args: string }> = {};
+  const reader = r.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  const flush = (final = false) => {
+    if (content.length > emitted && (final || content.length - emitted >= 200)) {
+      emitLog("info", content.slice(emitted), attrs); emitted = content.length;
+    }
   };
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let nl: number;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line.startsWith("data:")) continue;
+        const data = line.slice(5).trim();
+        if (data === "[DONE]") continue;
+        let j: any; try { j = JSON.parse(data); } catch { continue; }
+        if (j.usage) usage = j.usage;
+        const d = j.choices?.[0]?.delta;
+        if (d?.content) content += d.content;
+        if (Array.isArray(d?.tool_calls)) for (const tc of d.tool_calls) {
+          const i = tc.index ?? 0;
+          const acc = toolAcc[i] || (toolAcc[i] = { id: "", name: "", args: "" });
+          if (tc.id) acc.id = tc.id;
+          if (tc.function?.name) acc.name = tc.function.name;
+          if (tc.function?.arguments) acc.args += tc.function.arguments;
+        }
+        flush();
+      }
+    }
+  } catch (e) { recordCall("completion", model, "error"); throw networkError("callLlm", url, e); }
+  flush(true);
+
+  recordTokens("completion", model, usage);
+  recordCall("completion", model, "ok");
+  const toolCalls = Object.keys(toolAcc).map(Number).sort((a, b) => a - b)
+    .map((i) => ({ id: toolAcc[i].id, name: toolAcc[i].name, arguments: toolAcc[i].args || "{}" }));
+  if (toolCalls.length) emitLog("info", `[step ${step}] -> tool_calls: ${toolCalls.map((t) => t.name).join(", ")}`, attrs);
+  return { content, toolCalls, tokens: usage?.total_tokens ?? 0 };
 }
 
 // ── compaction: the rolling-summary LLM activity ────────────────────────────
