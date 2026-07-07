@@ -75,21 +75,23 @@ export async function turtleSim(input: { workSession: string; program: string; e
 // check_completed: the DETERMINISTIC VALIDATOR that gates the loop (validator-in-the-
 // loop). Runs /work/prog.lua against every env and reports whether the task is truly
 // complete — the agent cannot end the loop by merely declaring success.
-export async function checkCompleted(input: { workSession: string; envs: Env[] }): Promise<{ complete: boolean; feedback: string; score: number; total: number }> {
+export async function checkCompleted(input: { workSession: string; envs: Env[] }): Promise<{ complete: boolean; feedback: string; score: number; total: number; program: string }> {
   const c = await conn(input.workSession);
   const text = await lang.runJs(c, validatorFromWorkCode(input.envs));
   if (text.includes('"status":"missing"')) {
-    return { complete: false, score: 0, total: 0,
+    return { complete: false, score: 0, total: 0, program: "",
       feedback: "VALIDATOR: no program at /work/prog.lua yet. Submit your COMPLETE Lua program to turtle_sim (it writes the file); the deterministic validator runs it every turn and gates completion." };
   }
   const res = parseSim(text);
+  // return the actual program the validator ran, so best.program always matches best.score
+  const program = (await lang.runJs(c, `console.log(await fs.readFile(${JSON.stringify(WORK_PROG)},'utf8').catch(()=>''))`)).trim();
   const feedback = res.passed
     ? `VALIDATOR: SIM_RESULT: PASS — all ${res.total} invariants met. Task complete.`
     : `VALIDATOR (deterministic; ran your /work/prog.lua against every environment): ${res.score}/${res.total} invariants passed.` +
       (res.failures.length ? "\n" + res.failures.map((f) => "  " + f).join("\n") : "") +
       (res.total === 0 ? "\n(program errored at runtime)\n" + res.output.slice(0, 1200) : "") +
       "\nYou are NOT done until 0 failed. Revise the program and resubmit it via turtle_sim.";
-  return { complete: res.passed, feedback, score: res.score, total: res.total };
+  return { complete: res.passed, feedback, score: res.score, total: res.total, program };
 }
 
 // run_js: raw sandbox passthrough for the agent's own inspection.

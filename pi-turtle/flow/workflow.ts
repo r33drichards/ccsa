@@ -78,7 +78,7 @@ export async function researchWorkflow(input: ResearchInput, state?: LoopState):
     // history and the loop breaks ONLY on a real PASS — the agent cannot self-declare done.
     if (!ranValidatorFresh) {
       const chk = await checkCompleted({ workSession, envs: input.envs });
-      if (chk.score > s.best.score) s.best = { program: s.best.program, score: chk.score, total: chk.total, passed: chk.complete };
+      if (chk.score > s.best.score) s.best = { program: chk.program || s.best.program, score: chk.score, total: chk.total, passed: chk.complete };
       s.best.passed = s.best.passed || chk.complete;
       s.messages.push({ role: "user", content: chk.feedback });
       if (chk.complete) return done();

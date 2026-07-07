@@ -147,7 +147,10 @@ function buildServer(): McpServer {
       const r: any = await h.result();
       out = r.passed
         ? { type: "ok", score: `${r.score}/${r.total}`, attempts: r.attempts, ui, files: { "prog.lua": r.program } }
-        : { type: "error", msg: `did not pass (best ${r.score}/${r.total})`, ui, files: { "prog.lua": r.program } };
+        // never fully passed -> ERROR state; the best attempt is metadata, not a deliverable
+        : { type: "error", msg: `did not pass — best ${r.score}/${r.total} invariants after ${r.attempts} attempts`,
+            score: r.score, total: r.total, attempts: r.attempts, ui,
+            ...(r.program ? { files: { "prog.lua": r.program } } : {}) };
     } else out = { type: "error", msg: `workflow ${desc.status.name}`, ui };
     return { content: [{ type: "text" as const, text: JSON.stringify(out) }], structuredContent: out };
   });
