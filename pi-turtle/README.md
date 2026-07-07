@@ -74,8 +74,12 @@ buffered text — reliable for logs/CI. Each `turtle_sim` result arrives as a
 
 | command | tools the agent has |
 |---|---|
-| `./pi-turtle/pilot.sh` | `turtle_sim` + read, edit, write, bash |
+| `./pi-turtle/pilot.sh` | `turtle_sim`, `publish_gist` + read, edit, write, bash |
 | `./pi-turtle/pilot.sh --restricted` | `turtle_sim` only (sandbox) |
+
+When a program passes, ask the agent to **publish** it — in full mode it calls
+`publish_gist`, which uploads `prog.lua` + `spec.yaml` to a GitHub gist (via `gh`,
+which must be authenticated) and returns the URL.
 
 Both load this repo's CC:Tweaked skills (`cc-tweaked` API reference,
 `craftos-sim`, `turtle-crafter-compressor`, …) so the agent knows the API and
@@ -107,4 +111,3 @@ proven patterns, and neither loads your global pi skills or `~/AGENTS.md`.
 
 - **Orchestrator** to co-author a brand-new sim/test from chat (today the sim is
   the fixed melon-compressor).
-- **Publish** the finished program to a GitHub gist.

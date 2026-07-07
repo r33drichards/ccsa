@@ -14,13 +14,24 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { spawn } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
 const SIM_DIR = process.env.TURTLE_SIM_DIR || join(process.cwd(), "spike/melon-loop");
 const PORT = process.env.TURTLE_PORT || "8790";
 
 interface SimResult { score: number; total: number; failures: string[]; raw: string; }
+
+function run(cmd: string, args: string[], cwd: string): Promise<{ code: number; stdout: string; stderr: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(cmd, args, { cwd });
+    let stdout = "", stderr = "";
+    child.stdout.on("data", (d) => (stdout += d.toString()));
+    child.stderr.on("data", (d) => (stderr += d.toString()));
+    child.on("close", (code) => resolve({ code: code ?? 1, stdout, stderr }));
+    child.on("error", (e) => resolve({ code: 1, stdout, stderr: String(e) }));
+  });
+}
 
 function runSim(): Promise<SimResult> {
   return new Promise((resolve) => {
@@ -72,6 +83,39 @@ export default function piTurtle(pi: ExtensionAPI) {
         content: [{ type: "text" as const, text: head + fails + hint }],
         details: { score: r.score, total: r.total, failures: r.failures },
       };
+    },
+  });
+
+  (pi.registerTool as (t: unknown) => unknown)({
+    name: "publish_gist",
+    label: "Publish Gist",
+    description:
+      "Publish the finished turtle program (prog.lua) and its sim spec (spec.yaml) " +
+      "to a GitHub gist via gh, and return the gist URL. Call this AFTER the program " +
+      "passes every sim postcondition (turtle_sim score is maxed).",
+    promptSnippet: "Publish the passing turtle program + spec to a GitHub gist; returns the URL.",
+    parameters: Type.Object({
+      description: Type.Optional(Type.String({ description: "Gist description." })),
+      public: Type.Optional(Type.Boolean({ description: "Make the gist public (default: false / secret)." })),
+    }),
+    async execute(_id: string, params: { description?: string; public?: boolean }) {
+      const prog = join(SIM_DIR, "prog.lua");
+      const spec = join(SIM_DIR, "spec.yaml");
+      const files = [prog, spec].filter(existsSync);
+      if (!files.length) {
+        return { content: [{ type: "text" as const, text: "publish failed: prog.lua not found — write and test a program first." }],
+                 details: { error: "no_files" } };
+      }
+      const desc = params.description || "CC:Tweaked turtle program (passed the craftos sim)";
+      const args = ["gist", "create", "-d", desc, ...(params.public ? ["--public"] : []), ...files];
+      const r = await run("gh", args, SIM_DIR);
+      const url = (r.stdout.trim().match(/https?:\/\/\S+/) || [])[0];
+      if (r.code !== 0 || !url) {
+        return { content: [{ type: "text" as const,
+          text: `publish failed (exit ${r.code}). Is gh installed and authenticated (gh auth status)?\n${(r.stderr || r.stdout).trim().slice(0, 500)}` }],
+          details: { error: "gh_failed", code: r.code } };
+      }
+      return { content: [{ type: "text" as const, text: `Published: ${url}` }], details: { url } };
     },
   });
 }
