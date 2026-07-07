@@ -9,9 +9,15 @@ import type * as acts from "./activities.ts";
 import { TOOLS } from "./tools.ts";
 import type { Env } from "./arena-object.ts";
 
-const { openSandbox, callLlm, turtleSim, checkCompleted, runJs } = proxyActivities<typeof acts>({
+const { openSandbox, turtleSim, checkCompleted, runJs } = proxyActivities<typeof acts>({
   startToCloseTimeout: "5 minutes",
   retry: { maximumAttempts: 6, initialInterval: "2 seconds", maximumInterval: "30 seconds" },
+});
+// callLlm gets a longer budget (glm can be slow on larger contexts) and fewer retries —
+// a retry with the SAME context just times out again, so don't burn 6 attempts on it.
+const { callLlm } = proxyActivities<typeof acts>({
+  startToCloseTimeout: "6 minutes",
+  retry: { maximumAttempts: 3, initialInterval: "3 seconds", maximumInterval: "20 seconds" },
 });
 
 export type ResearchInput = { task: string; envs: Env[]; systemPrompt: string; model?: string; maxSteps?: number };
@@ -20,6 +26,20 @@ type Best = { program: string; score: number; total: number; passed: boolean };
 type LoopState = { messages: any[]; step: number; best: Best; attempts: number; opened: boolean };
 
 const COMPACT_EVERY = 30; // continue-as-new cadence, to bound workflow history size
+const KEEP_TAIL = 14;     // recent messages kept (plus system + first user) to bound LLM context
+
+// Keep the system prompt (arena + skills) + the first user message + the last KEEP_TAIL
+// messages. Advancing past a leading `role:"tool"` avoids orphaning a tool result from its
+// assistant tool_calls (which the chat API rejects). This is what keeps callLlm fast — an
+// unbounded transcript is what made it exceed its timeout and fail the workflow.
+function pruneMessages(msgs: any[]): any[] {
+  if (msgs.length <= KEEP_TAIL + 3) return msgs;
+  let start = msgs.length - KEEP_TAIL;
+  while (start < msgs.length && msgs[start].role === "tool") start++;
+  return [msgs[0], msgs[1],
+    { role: "user", content: "[earlier turns elided to bound context; the arena, invariants, and skills remain in the system message above]" },
+    ...msgs.slice(start)];
+}
 
 export async function researchWorkflow(input: ResearchInput, state?: LoopState): Promise<ResearchResult> {
   const model = input.model || "glm-5.2";
@@ -46,7 +66,15 @@ export async function researchWorkflow(input: ResearchInput, state?: LoopState):
   };
 
   while (s.step < maxSteps) {
-    const a = await callLlm({ messages: s.messages, tools: TOOLS, model });
+    s.messages = pruneMessages(s.messages); // bound the LLM context so callLlm stays fast
+
+    // A retry-exhausted activity must NOT hard-FAIL the whole research: end gracefully and
+    // return the best attempt (research_status then reports type:error with prog.lua metadata).
+    let a: acts.LlmOut;
+    try {
+      a = await callLlm({ messages: s.messages, tools: TOOLS, model });
+    } catch { break; } // e.g. glm timeout after retries -> stop, return best-so-far
+
     s.messages.push(a.toolCalls.length
       ? { role: "assistant", content: a.content, tool_calls: a.toolCalls.map((tc) => ({ id: tc.id, type: "function", function: { name: tc.name, arguments: tc.arguments } })) }
       : { role: "assistant", content: a.content });
@@ -57,17 +85,21 @@ export async function researchWorkflow(input: ResearchInput, state?: LoopState):
       let args: any = {};
       try { args = JSON.parse(tc.arguments || "{}"); } catch { /* malformed -> empty */ }
       let obs: string;
-      if (tc.name === "turtle_sim") {
-        s.attempts++;
-        const program = String(args.program ?? "");
-        const r = await turtleSim({ workSession, program, envs: input.envs });
-        obs = r.observation;
-        ranValidatorFresh = true; // turtle_sim ran the deterministic validator on /work/prog.lua this turn
-        if (r.score > s.best.score) s.best = { program, score: r.score, total: r.total, passed: r.passed };
-      } else if (tc.name === "run_js") {
-        obs = (await runJs({ workSession, code: String(args.code ?? "") })).text || "(no output)";
-      } else {
-        obs = `unknown tool: ${tc.name}`;
+      try {
+        if (tc.name === "turtle_sim") {
+          s.attempts++;
+          const program = String(args.program ?? "");
+          const r = await turtleSim({ workSession, program, envs: input.envs });
+          obs = r.observation;
+          ranValidatorFresh = true; // turtle_sim ran the deterministic validator on /work/prog.lua this turn
+          if (r.score > s.best.score) s.best = { program, score: r.score, total: r.total, passed: r.passed };
+        } else if (tc.name === "run_js") {
+          obs = (await runJs({ workSession, code: String(args.code ?? "") })).text || "(no output)";
+        } else {
+          obs = `unknown tool: ${tc.name}`;
+        }
+      } catch (e) {
+        obs = `tool ${tc.name} failed (transient environment error): ${String(e).slice(0, 200)}. Try again.`;
       }
       s.messages.push({ role: "tool", tool_call_id: tc.id, content: obs });
     }
@@ -77,11 +109,13 @@ export async function researchWorkflow(input: ResearchInput, state?: LoopState):
     // used only run_js, or declared done with no tool call). Its output is injected into
     // history and the loop breaks ONLY on a real PASS — the agent cannot self-declare done.
     if (!ranValidatorFresh) {
-      const chk = await checkCompleted({ workSession, envs: input.envs });
-      if (chk.score > s.best.score) s.best = { program: chk.program || s.best.program, score: chk.score, total: chk.total, passed: chk.complete };
-      s.best.passed = s.best.passed || chk.complete;
-      s.messages.push({ role: "user", content: chk.feedback });
-      if (chk.complete) return done();
+      try {
+        const chk = await checkCompleted({ workSession, envs: input.envs });
+        if (chk.score > s.best.score) s.best = { program: chk.program || s.best.program, score: chk.score, total: chk.total, passed: chk.complete };
+        s.best.passed = s.best.passed || chk.complete;
+        s.messages.push({ role: "user", content: chk.feedback });
+        if (chk.complete) return done();
+      } catch { /* validator env error -> skip this turn's gate, keep going */ }
     } else if (s.best.passed) {
       return done();
     }

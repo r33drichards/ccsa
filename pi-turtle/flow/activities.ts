@@ -42,7 +42,7 @@ export async function callLlm(input: { messages: unknown[]; tools: unknown[]; mo
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
     body: JSON.stringify({ model, messages: input.messages, tools: input.tools, tool_choice: "auto", temperature: 0 }),
-    signal: AbortSignal.timeout(180000),
+    signal: AbortSignal.timeout(300000), // 5 min, within the 6-min activity budget; context is pruned to keep this fast
   });
   if (!r.ok) throw new Error(`llm ${r.status}: ${(await r.text()).slice(0, 300)}`);
   const j: any = await r.json();
