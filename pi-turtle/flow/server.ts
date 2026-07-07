@@ -173,10 +173,10 @@ function buildServer(): McpServer {
     else if (desc.status.name === "COMPLETED") {
       const r: any = await h.result();
       out = r.passed
-        ? { type: "ok", score: `${r.score}/${r.total}`, attempts: r.attempts, steps: r.steps, tokens: r.tokens, ui, files: { "prog.lua": r.program } }
+        ? { type: "ok", score: `${r.score}/${r.total}`, attempts: r.attempts, steps: r.steps, tokens: r.tokens, report: r.report, ui, files: { "prog.lua": r.program } }
         // never fully passed -> ERROR state; the best attempt is metadata, not a deliverable
         : { type: "error", msg: `did not pass — best ${r.score}/${r.total} invariants after ${r.attempts} attempts`,
-            score: r.score, total: r.total, attempts: r.attempts, steps: r.steps, tokens: r.tokens, ui,
+            score: r.score, total: r.total, attempts: r.attempts, steps: r.steps, tokens: r.tokens, report: r.report, ui,
             ...(r.program ? { files: { "prog.lua": r.program } } : {}) };
     } else out = { type: "error", msg: `workflow ${desc.status.name}`, ui };
     if (out.type !== "running") emitLog(out.type === "ok" ? "info" : "error", `research ${out.type}: ${workflowId}`, { "workflow.id": workflowId, ...out, files: undefined });

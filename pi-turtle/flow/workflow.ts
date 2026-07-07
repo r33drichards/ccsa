@@ -29,11 +29,31 @@ const { callLlm, compact } = proxyActivities<typeof acts>({
 const TOOLS_SCHEMA_TOK = toolsSchemaTok(TOOLS); // static tool-schema token cost, for the gate
 
 export type ResearchInput = { task: string; envs: Env[]; systemPrompt: string; model?: string; maxSteps?: number; maxTokens?: number };
-export type ResearchResult = { passed: boolean; score: number; total: number; program: string; attempts: number; steps: number; tokens: number };
+export type ResearchResult = { passed: boolean; score: number; total: number; program: string; attempts: number; steps: number; tokens: number; report: string };
 type Best = { program: string; score: number; total: number; passed: boolean };
-type LoopState = { messages: any[]; step: number; best: Best; attempts: number; opened: boolean; summary: string; tokens: number };
+type LoopState = { messages: any[]; step: number; best: Best; attempts: number; opened: boolean; summary: string; tokens: number; lastObs: string };
 
 const COMPACT_EVERY = 30; // continue-as-new cadence, to bound Temporal event-history size
+
+// A caller-facing narrative is built DETERMINISTICALLY at the end (no extra LLM call): it reuses
+// the rolling summary (s.summary — an LLM-maintained "APPROACHES TRIED & WHY REJECTED / INVARIANTS
+// STILL FAILING" record), the most recent validator observation (s.lastObs), and the outcome stats.
+function stripBestProgram(summary: string): string {
+  // the full program is returned separately in `program`; drop the big code block
+  return summary.replace(/CURRENT BEST PROGRAM:\s*```lua[\s\S]*?```/g,
+    "CURRENT BEST PROGRAM: (returned separately in the `program` field)").trim();
+}
+function buildReport(s: LoopState, reason: string): string {
+  const solved = s.best.passed;
+  const head = solved
+    ? `SOLVED — all ${s.best.total} invariants pass (best ${s.best.score}/${s.best.total}) after ${s.attempts} sim attempts across ${s.step} steps (${s.tokens} tokens).`
+    : `NOT SOLVED (${reason}) — best ${Math.max(s.best.score,0)}/${s.best.total} invariants after ${s.attempts} sim attempts across ${s.step} steps (${s.tokens} tokens).`;
+  const parts = [head];
+  if (!solved && s.lastObs) parts.push(`Most recent validator result:\n${s.lastObs}`);
+  if (s.summary) parts.push(`What was attempted (progress record):\n${stripBestProgram(s.summary)}`);
+  else if (!solved) parts.push(`No compaction record was produced (short run). See the most recent validator result above.`);
+  return parts.join("\n\n");
+}
 
 // cheap, deterministic gate (workflow-side, no transcript serialization); the actual eviction +
 // summarization is the compact ACTIVITY, invoked only when this trips.
@@ -51,7 +71,7 @@ export async function researchWorkflow(input: ResearchInput, state?: LoopState):
       { role: "system", content: input.systemPrompt },
       { role: "user", content: `${input.task}\n\nBegin. Write the program and call turtle_sim to test it; read the failing invariants and iterate until it reports 0 failed.` },
     ],
-    step: 0, best: { program: "", score: -1, total: 0, passed: false }, attempts: 0, opened: false, summary: "", tokens: 0,
+    step: 0, best: { program: "", score: -1, total: 0, passed: false }, attempts: 0, opened: false, summary: "", tokens: 0, lastObs: "",
   };
   const maxTokens = input.maxTokens ?? 0; // 0 = unbounded
 
@@ -63,7 +83,11 @@ export async function researchWorkflow(input: ResearchInput, state?: LoopState):
       const p = await runJs({ workSession, code: `console.log(await fs.readFile('/work/prog.lua','utf8').catch(()=>''))` });
       s.best.program = p.text.trim();
     }
-    return { passed: s.best.passed, score: Math.max(s.best.score, 0), total: s.best.total, program: s.best.program, attempts: s.attempts, steps: s.step, tokens: s.tokens };
+    const reason = s.best.passed ? "solved"
+      : (maxTokens && s.tokens >= maxTokens) ? "token budget exhausted"
+      : s.step >= maxSteps ? "reached max steps"
+      : "stopped";
+    return { passed: s.best.passed, score: Math.max(s.best.score, 0), total: s.best.total, program: s.best.program, attempts: s.attempts, steps: s.step, tokens: s.tokens, report: buildReport(s, reason) };
   };
 
   while (s.step < maxSteps) {
@@ -98,6 +122,7 @@ export async function researchWorkflow(input: ResearchInput, state?: LoopState):
           const program = String(args.program ?? "");
           const r = await turtleSim({ workSession, program, envs: input.envs });
           obs = r.observation;
+          s.lastObs = r.observation; // most recent sim/validator feedback -> caller-facing report
           if (r.score > s.best.score) s.best = { program, score: r.score, total: r.total, passed: r.passed };
         } else if (tc.name === "run_js") {
           obs = (await runJs({ workSession, code: String(args.code ?? "") })).text || "(no output)";
@@ -121,6 +146,7 @@ export async function researchWorkflow(input: ResearchInput, state?: LoopState):
         if (chk.score > s.best.score) s.best = { program: chk.program || s.best.program, score: chk.score, total: chk.total, passed: chk.complete };
         s.best.passed = s.best.passed || chk.complete;
         if (chk.complete) return done();
+        s.lastObs = chk.feedback; // failing-invariant detail from the finish-signal validator
         s.messages.push({ role: "user", content: chk.feedback + " You are NOT finished — fix the program, test it with turtle_sim, and only stop once every invariant passes." });
       } catch { /* validator env error -> keep going */ }
     }
