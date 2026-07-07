@@ -37,17 +37,30 @@ export function initTelemetry(serviceName?: string): void {
 }
 
 // ── metrics ──────────────────────────────────────────────────────────────────
-const meter = metrics.getMeter("turtle-research");
-const tokensCounter: Counter = meter.createCounter("llm.tokens", { description: "LLM tokens consumed", unit: "{token}" });
-const callsCounter: Counter = meter.createCounter("llm.calls", { description: "LLM API calls", unit: "{call}" });
+// Instruments MUST be created lazily, AFTER initTelemetry() has registered the real
+// MeterProvider. Unlike getTracer()/getLogger() (which return proxies that pick up the
+// global provider on every call), a Counter created at module-load time binds permanently
+// to whatever provider was global then — the no-op one, since this module is imported
+// before initTelemetry runs — and silently never exports. So cache on first record().
+let tokensCounter: Counter | undefined;
+let callsCounter: Counter | undefined;
+function counters(): { tokens: Counter; calls: Counter } {
+  if (!tokensCounter || !callsCounter) {
+    const meter = metrics.getMeter("turtle-research");
+    tokensCounter = meter.createCounter("llm.tokens", { description: "LLM tokens consumed", unit: "{token}" });
+    callsCounter = meter.createCounter("llm.calls", { description: "LLM API calls", unit: "{call}" });
+  }
+  return { tokens: tokensCounter, calls: callsCounter };
+}
 export function recordTokens(kind: string, model: string, usage: any): void {
   if (!usage) return;
   const p = Number(usage.prompt_tokens || 0), c = Number(usage.completion_tokens || 0);
-  if (p > 0) tokensCounter.add(p, { kind, model, type: "prompt" });
-  if (c > 0) tokensCounter.add(c, { kind, model, type: "completion" });
+  const { tokens } = counters();
+  if (p > 0) tokens.add(p, { kind, model, type: "prompt" });
+  if (c > 0) tokens.add(c, { kind, model, type: "completion" });
 }
 export function recordCall(kind: string, model: string, status: "ok" | "error"): void {
-  callsCounter.add(1, { kind, model, status });
+  counters().calls.add(1, { kind, model, status });
 }
 
 // ── traces ───────────────────────────────────────────────────────────────────
