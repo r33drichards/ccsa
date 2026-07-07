@@ -1,0 +1,20 @@
+{
+  "name": "turtleflow",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@earendil-works/pi-ai": "latest",
+    "@earendil-works/pi-coding-agent": "latest",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@temporalio/activity": "^1.19.0",
+    "@temporalio/client": "^1.19.0",
+    "@temporalio/testing": "^1.19.0",
+    "@temporalio/worker": "^1.19.0",
+    "@temporalio/workflow": "^1.19.0",
+    "typebox": "^1.1.24",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "tsx": "latest"
+  }
+}

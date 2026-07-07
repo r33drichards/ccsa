@@ -18,3 +18,5 @@ pi-turtle/agent/auth.json
 pi-turtle/agent/settings.json
 pi-turtle/agent/sessions/
 pi-turtle/agent/bin/
+pi-turtle/flow/node_modules/
+pi-turtle/flow/.run/
