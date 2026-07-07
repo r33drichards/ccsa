@@ -73,7 +73,19 @@ export function validatorFromWorkCode(envs: Env[], progPath = WORK_PROG): string
   );
 }
 
-export type SimResult = { score: number; total: number; passed: boolean; failures: string[]; output: string };
+// envError === the SIM ENGINE ITSELF failed to load/run (not the agent's Lua). The
+// validator run_js emits a parseable `{nodes:[...]}` verdict only when the craftos
+// engine actually loaded and ran the program. If instead the raw text carries one of
+// these signatures, the loader threw BEFORE any invariant could be evaluated — i.e.
+// /work/bootstrap.js is gone (ENOENT), the whole /work snapshot vanished, `craftos`
+// is undefined, a path was denied by policy, or run_js died opaquely ([execution
+// failed]). Collapsing that into "your program errored (0/0)" is exactly what sent
+// turtle-inher87j chasing a phantom Lua bug for 1.9M tokens — so we surface it as a
+// distinct ENVIRONMENT fault instead. A real Lua error still produces a nodes verdict
+// (the engine catches it per-node), so this only fires when the engine never ran.
+const ENGINE_DOWN = /\[execution failed\]|(?:craftos|picat)\s+is\s+not\s+defined|ENOENT|denied by policy/;
+
+export type SimResult = { score: number; total: number; passed: boolean; failures: string[]; output: string; envError: boolean };
 
 export function parseSim(text: string): SimResult {
   const lines = text.trim().split("\n");
@@ -81,13 +93,13 @@ export function parseSim(text: string): SimResult {
   for (let i = lines.length - 1; i >= 0; i--) {
     try { const o = JSON.parse(lines[i]); if (o && Array.isArray(o.nodes)) { verdict = o; break; } } catch { /* keep scanning */ }
   }
-  if (!verdict) return { score: 0, total: 0, passed: false, failures: [], output: text.slice(0, 2000) };
+  if (!verdict) return { score: 0, total: 0, passed: false, failures: [], output: text.slice(0, 2000), envError: ENGINE_DOWN.test(text) };
   const combined = verdict.nodes.map((n: any) => `[${n.label}]\n${n.output ?? ""}`).join("\n");
   const score = (combined.match(/^\s*ok\s+-/gm) || []).length;
   const failures = (combined.match(/^\s*FAIL\s+-.*$/gm) || []).map((s: string) => s.trim());
   const total = score + failures.length;
   const passed = total > 0 && combined.includes("SIM_RESULT: PASS") && !combined.includes("SIM_RESULT: FAIL");
-  return { score, total, passed, failures, output: combined };
+  return { score, total, passed, failures, output: combined, envError: false };
 }
 
 // ── system prompt ─────────────────────────────────────────────────────────

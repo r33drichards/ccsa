@@ -4,13 +4,13 @@
 //   turtle_sim -> turtleSim (run the program against the arena, the state mutation)
 //   run_js     -> runJs     (raw sandbox inspection)
 // Terminates when turtle_sim passes, the model stops calling tools, or max steps.
-import { proxyActivities, workflowInfo, continueAsNew } from "@temporalio/workflow";
+import { proxyActivities, workflowInfo, continueAsNew, ApplicationFailure } from "@temporalio/workflow";
 import type * as acts from "./activities.ts";
 import { TOOLS } from "./tools.ts";
 import { estTokens, sendView, COMPACT_THRESHOLD, toolsSchemaTok } from "./compaction.ts";
 import type { Env } from "./arena-object.ts";
 
-const { openSandbox, turtleSim, checkCompleted, runJs } = proxyActivities<typeof acts>({
+const { openSandbox, turtleSim, checkCompleted, runJs, checkEngine } = proxyActivities<typeof acts>({
   startToCloseTimeout: "15 minutes",
   retry: { maximumAttempts: 6, initialInterval: "2 seconds", maximumInterval: "30 seconds" },
 });
@@ -31,9 +31,24 @@ const TOOLS_SCHEMA_TOK = toolsSchemaTok(TOOLS); // static tool-schema token cost
 export type ResearchInput = { task: string; envs: Env[]; systemPrompt: string; model?: string; maxSteps?: number; maxTokens?: number };
 export type ResearchResult = { passed: boolean; score: number; total: number; program: string; attempts: number; steps: number; tokens: number; report: string };
 type Best = { program: string; score: number; total: number; passed: boolean };
-type LoopState = { messages: any[]; step: number; best: Best; attempts: number; opened: boolean; summary: string; tokens: number; lastObs: string };
+type LoopState = { messages: any[]; step: number; best: Best; attempts: number; opened: boolean; summary: string; tokens: number; lastObs: string; stall: number };
 
 const COMPACT_EVERY = 30; // continue-as-new cadence, to bound Temporal event-history size
+
+// ── env-collapse guardrail ──────────────────────────────────────────────────
+// turtle-inher87j proved the sandbox can die MID-RUN (the /work snapshot vanished
+// after ~5 healthy calls), after which EVERY tool result is an engine fault and the
+// agent flails against a dead environment to maxSteps (1.9M tokens, 0/0 forever). A
+// one-time preflight can't catch a mid-run collapse, so we also watch for a run of
+// tool results that look like the engine is down, then CONFIRM with checkEngine before
+// aborting — the confirmation makes a false positive (the agent's own throwing probe)
+// harmless: we just reset and continue. We FAIL CLOSED (no auto re-seed): a lost /work
+// means a fresh sandbox would silently drop the agent's prior artifacts, so surface a
+// clean, legible failure and let the caller re-trigger rather than continue on a
+// half-restored environment.
+const STALL_PROBE = 6; // consecutive engine-down-looking tool results before we confirm+abort
+const ENGINE_DOWN_RE =
+  /SIM ENGINE UNAVAILABLE|\[execution failed\]|(?:craftos|picat)\s+is\s+not\s+defined|\/work[^\n]*ENOENT|ENOENT:\s*work/;
 
 // A caller-facing narrative is built DETERMINISTICALLY at the end (no extra LLM call): it reuses
 // the rolling summary (s.summary — an LLM-maintained "APPROACHES TRIED & WHY REJECTED / INVARIANTS
@@ -71,11 +86,19 @@ export async function researchWorkflow(input: ResearchInput, state?: LoopState):
       { role: "system", content: input.systemPrompt },
       { role: "user", content: `${input.task}\n\nBegin. Write the program and call turtle_sim to test it; read the failing invariants and iterate until it reports 0 failed.` },
     ],
-    step: 0, best: { program: "", score: -1, total: 0, passed: false }, attempts: 0, opened: false, summary: "", tokens: 0, lastObs: "",
+    step: 0, best: { program: "", score: -1, total: 0, passed: false }, attempts: 0, opened: false, summary: "", tokens: 0, lastObs: "", stall: 0,
   };
   const maxTokens = input.maxTokens ?? 0; // 0 = unbounded
 
-  if (!s.opened) { await openSandbox(workSession); s.opened = true; }
+  if (!s.opened) {
+    await openSandbox(workSession);
+    // Preflight: fail fast (with a distinct cause) if the seeded engine can't even load,
+    // instead of discovering it 1.9M tokens later. Catches the "seeding failed at start"
+    // variant; the stall guardrail below catches the "collapsed mid-run" variant.
+    const eng = await checkEngine({ workSession });
+    if (!eng.ok) throw ApplicationFailure.nonRetryable(`sim engine preflight failed — sandbox is broken before any work began: ${eng.detail}`, "SimEngineUnavailable");
+    s.opened = true;
+  }
 
   const done = async (): Promise<ResearchResult> => {
     // if we passed via a file the agent wrote directly (no turtle_sim), fetch the program
@@ -133,6 +156,23 @@ export async function researchWorkflow(input: ResearchInput, state?: LoopState):
         obs = `tool ${tc.name} failed (transient environment error): ${String(e).slice(0, 200)}. Try again.`;
       }
       s.messages.push({ role: "tool", tool_call_id: tc.id, content: obs });
+      // Track a run of engine-down-looking results (turtle_sim envError OR a run_js result
+      // carrying an engine-fault signature). A healthy result resets the counter.
+      s.stall = ENGINE_DOWN_RE.test(obs) ? s.stall + 1 : 0;
+    }
+
+    // Enough consecutive engine-down signals? CONFIRM with an authoritative smoke test —
+    // if the engine really is down, abort NOW with a diagnosis rather than grinding to
+    // maxSteps against a dead sandbox. (The third agent's `report` field can carry this
+    // failure/details; here we fail the workflow with a distinct, legible cause.)
+    if (s.stall >= STALL_PROBE) {
+      const eng = await checkEngine({ workSession });
+      if (!eng.ok)
+        throw ApplicationFailure.nonRetryable(
+          `sim engine collapsed mid-run — ${s.stall} consecutive engine-fault tool results, confirmed down by smoke test: ${eng.detail}. ` +
+          `Aborting at step ${s.step}/${maxSteps} (best score ${Math.max(s.best.score, 0)}/${s.best.total}) instead of burning the full budget on a dead sandbox.`,
+          "SimEngineUnavailable");
+      s.stall = 0; // false alarm (e.g. the agent's own throwing probe) — engine is fine, continue
     }
 
     // Completion runs SOLELY through the finish signal (mini-swe has_finished pattern): the

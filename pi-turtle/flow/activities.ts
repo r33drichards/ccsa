@@ -248,11 +248,41 @@ export async function compact(input: { messages: any[]; summary: string; task: s
 
 export type SimObs = SimResult & { observation: string };
 
+// The env-fault message the agent sees when the SIM ENGINE (not its Lua) is down. It is
+// deliberately blunt: "do not rewrite your program" — because the failure mode we are
+// guarding against is exactly the agent misreading an engine crash as its own bug and
+// burning turns rewriting correct Lua (turtle-inher87j).
+const ENGINE_DOWN_MSG =
+  "⛔ SIM ENGINE UNAVAILABLE — the simulator itself failed to load/run; this is an ENVIRONMENT " +
+  "fault, NOT a bug in your Lua. Rewriting your program will NOT help. The sandbox /work or the " +
+  "craftos engine is missing (bootstrap/ENOENT/undefined). The run harness must repair the sandbox.";
+
 function observe(res: SimResult): string {
+  if (res.envError) return ENGINE_DOWN_MSG + (res.output ? "\n" + res.output.slice(0, 800) : "");
   const head = res.total > 0 ? `score: ${res.score}/${res.total}${res.passed ? "  ✅ ALL PASS (0 failed)" : ""}` : "score: 0 (program errored at runtime — see log)";
   const fails = res.failures.length ? "\nfailing invariants:\n" + res.failures.map((f) => "  " + f).join("\n") : "";
   const log = res.total === 0 && res.output ? "\n" + res.output.slice(0, 1500) : "";
   return head + fails + log;
+}
+
+// Preflight / on-demand SIM ENGINE health check. Loads the seeded bootstrap and asserts
+// `craftos` came into scope as a function — the minimal, false-positive-safe signal that
+// the engine can run at all. We deliberately do NOT run a full craftos({nodes}) here: a
+// world/program typo could false-negative and fail otherwise-healthy runs. This precisely
+// catches the observed faults (bootstrap ENOENT, /work vanished, `craftos is not defined`)
+// without that risk. Returns {ok:false, detail} so the workflow can fail fast with a
+// distinct, legible cause instead of grinding to maxSteps on 0/0 sims.
+export async function checkEngine(input: { workSession: string }): Promise<{ ok: boolean; detail: string }> {
+  const c = await conn(input.workSession);
+  const probe =
+    `try { (0,eval)(await fs.readFile(${JSON.stringify(lang.WORK_BOOTSTRAP)},'utf8')); ` +
+    `console.log(typeof craftos === 'function' ? 'ENGINE_OK' : ('ENGINE_BAD: craftos is ' + typeof craftos)); } ` +
+    `catch (e) { console.log('ENGINE_ERR: ' + (e && e.message ? e.message : String(e))); }`;
+  let text: string;
+  try { text = (await lang.runJs(c, probe)).trim(); }
+  catch (e) { return { ok: false, detail: `engine probe could not run: ${String(e).slice(0, 300)}` }; }
+  const ok = text.includes("ENGINE_OK");
+  return { ok, detail: ok ? "craftos engine loaded" : `engine probe failed: ${text.slice(0, 400)}` };
 }
 
 // turtle_sim: the state MUTATION — write the program to /work/prog.lua (single source
@@ -278,6 +308,10 @@ export async function checkCompleted(input: { workSession: string; envs: Env[] }
   const res = parseSim(text);
   // return the actual program the validator ran, so best.program always matches best.score
   const program = (await lang.runJs(c, `console.log(await fs.readFile(${JSON.stringify(WORK_PROG)},'utf8').catch(()=>''))`)).trim();
+  // engine down: don't tell the agent its program failed — tell it the sandbox is broken.
+  if (res.envError)
+    return { complete: false, score: 0, total: 0, program,
+      feedback: ENGINE_DOWN_MSG + "\n" + res.output.slice(0, 800) };
   const feedback = res.passed
     ? `VALIDATOR: SIM_RESULT: PASS — all ${res.total} invariants met. Task complete.`
     : `VALIDATOR (deterministic; ran your /work/prog.lua against every environment): ${res.score}/${res.total} invariants passed.` +
