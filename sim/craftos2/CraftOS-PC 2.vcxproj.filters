@@ -1,0 +1,377 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
+      <Extensions>cpp;c;cc;cxx;def;odl;idl;hpj;bat;asm;asmx</Extensions>
+    </Filter>
+    <Filter Include="Header Files">
+      <UniqueIdentifier>{93995380-89BD-4b04-88EB-625FBE52EBFB}</UniqueIdentifier>
+      <Extensions>h;hh;hpp;hxx;hm;inl;inc;xsd</Extensions>
+    </Filter>
+    <Filter Include="Resource Files">
+      <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
+      <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav</Extensions>
+    </Filter>
+    <Filter Include="Other Files">
+      <UniqueIdentifier>{d98073d1-e5dd-4a38-b763-591f75234892}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\platform">
+      <UniqueIdentifier>{c4a66d54-67f9-499a-aeb2-8731fa9304f9}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\peripheral">
+      <UniqueIdentifier>{4f8ed92e-5ff1-484e-a4ce-dbc119007193}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\terminal">
+      <UniqueIdentifier>{6b3ac8ea-afdc-4ecd-9441-22a778c086d7}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\terminal">
+      <UniqueIdentifier>{a540b562-29a1-48d5-8e38-2f78bb9001c6}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\peripheral">
+      <UniqueIdentifier>{c4a9dce1-5d6a-45f0-9fc6-fc20746d5dfd}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\apis">
+      <UniqueIdentifier>{057043ee-8980-42ca-8f54-01615bc901d9}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\apis\handles">
+      <UniqueIdentifier>{f8338184-8321-4020-a301-5323e232da8b}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\handles">
+      <UniqueIdentifier>{34fd4c07-3d84-404a-aaf5-1b91e66eb095}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\api">
+      <UniqueIdentifier>{21592f07-c190-4e8a-8564-4f15f122a951}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\api\generic_peripheral">
+      <UniqueIdentifier>{7baa47e9-4c4b-4746-adb0-d1f4dda211d4}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="DOCUMENTATION.md">
+      <Filter>Other Files</Filter>
+    </None>
+    <None Include="LICENSE">
+      <Filter>Other Files</Filter>
+    </None>
+    <None Include=".github\workflows\main.yml">
+      <Filter>Other Files</Filter>
+    </None>
+    <None Include="Makefile.in">
+      <Filter>Other Files</Filter>
+    </None>
+    <None Include="README.md">
+      <Filter>Other Files</Filter>
+    </None>
+    <None Include=".gitignore">
+      <Filter>Other Files</Filter>
+    </None>
+    <None Include="configure.ac">
+      <Filter>Other Files</Filter>
+    </None>
+    <None Include="resources\.install">
+      <Filter>Other Files</Filter>
+    </None>
+    <None Include="resources\CCT-Test-Bootstrap.lua">
+      <Filter>Other Files</Filter>
+    </None>
+    <None Include="resources\CCT-Tests.patch">
+      <Filter>Other Files</Filter>
+    </None>
+    <None Include="resources\CraftOSTest.lua">
+      <Filter>Other Files</Filter>
+    </None>
+    <None Include="resources\packStandaloneROM.js">
+      <Filter>Other Files</Filter>
+    </None>
+    <None Include="resources\Info.plist">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="resources\BenchmarkRenderers.lua">
+      <Filter>Other Files</Filter>
+    </None>
+    <None Include="resources\BenchmarkRenderers.sh.bat">
+      <Filter>Other Files</Filter>
+    </None>
+    <None Include="vcpkg.json">
+      <Filter>Other Files</Filter>
+    </None>
+    <None Include="src\platform\ios.mm">
+      <Filter>Source Files\platform</Filter>
+    </None>
+    <None Include=".github\workflows\release.yml">
+      <Filter>Other Files</Filter>
+    </None>
+  </ItemGroup>
+  <ItemGroup>
+    <Image Include="image1.bmp">
+      <Filter>Other Files</Filter>
+    </Image>
+    <Image Include="resources\CraftOS-PC.ico">
+      <Filter>Resource Files</Filter>
+    </Image>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="src\gif.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\platform.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\terminal\CLITerminal.hpp">
+      <Filter>Header Files\terminal</Filter>
+    </ClInclude>
+    <ClInclude Include="src\terminal\HardwareSDLTerminal.hpp">
+      <Filter>Header Files\terminal</Filter>
+    </ClInclude>
+    <ClInclude Include="src\terminal\RawTerminal.hpp">
+      <Filter>Header Files\terminal</Filter>
+    </ClInclude>
+    <ClInclude Include="src\terminal\SDLTerminal.hpp">
+      <Filter>Header Files\terminal</Filter>
+    </ClInclude>
+    <ClInclude Include="src\terminal\TRoRTerminal.hpp">
+      <Filter>Header Files\terminal</Filter>
+    </ClInclude>
+    <ClInclude Include="src\peripheral\chest.hpp">
+      <Filter>Header Files\peripheral</Filter>
+    </ClInclude>
+    <ClInclude Include="src\peripheral\computer.hpp">
+      <Filter>Header Files\peripheral</Filter>
+    </ClInclude>
+    <ClInclude Include="src\peripheral\debugger.hpp">
+      <Filter>Header Files\peripheral</Filter>
+    </ClInclude>
+    <ClInclude Include="src\peripheral\debug_adapter.hpp">
+      <Filter>Header Files\peripheral</Filter>
+    </ClInclude>
+    <ClInclude Include="src\peripheral\drive.hpp">
+      <Filter>Header Files\peripheral</Filter>
+    </ClInclude>
+    <ClInclude Include="src\peripheral\energy.hpp">
+      <Filter>Header Files\peripheral</Filter>
+    </ClInclude>
+    <ClInclude Include="src\peripheral\modem.hpp">
+      <Filter>Header Files\peripheral</Filter>
+    </ClInclude>
+    <ClInclude Include="src\peripheral\monitor.hpp">
+      <Filter>Header Files\peripheral</Filter>
+    </ClInclude>
+    <ClInclude Include="src\peripheral\printer.hpp">
+      <Filter>Header Files\peripheral</Filter>
+    </ClInclude>
+    <ClInclude Include="src\peripheral\speaker.hpp">
+      <Filter>Header Files\peripheral</Filter>
+    </ClInclude>
+    <ClInclude Include="src\peripheral\tank.hpp">
+      <Filter>Header Files\peripheral</Filter>
+    </ClInclude>
+    <ClInclude Include="src\platform\resource.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\apis\handles\fs_handle.hpp">
+      <Filter>Header Files\handles</Filter>
+    </ClInclude>
+    <ClInclude Include="src\apis\handles\http_handle.hpp">
+      <Filter>Header Files\handles</Filter>
+    </ClInclude>
+    <ClInclude Include="src\runtime.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\termsupport.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\apis.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\util.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="api\Computer.hpp">
+      <Filter>Header Files\api</Filter>
+    </ClInclude>
+    <ClInclude Include="api\lib.hpp">
+      <Filter>Header Files\api</Filter>
+    </ClInclude>
+    <ClInclude Include="api\peripheral.hpp">
+      <Filter>Header Files\api</Filter>
+    </ClInclude>
+    <ClInclude Include="api\Terminal.hpp">
+      <Filter>Header Files\api</Filter>
+    </ClInclude>
+    <ClInclude Include="api\configuration.hpp">
+      <Filter>Header Files\api</Filter>
+    </ClInclude>
+    <ClInclude Include="src\main.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="api\CraftOS-PC.hpp">
+      <Filter>Header Files\api</Filter>
+    </ClInclude>
+    <ClInclude Include="api\FileEntry.hpp">
+      <Filter>Header Files\api</Filter>
+    </ClInclude>
+    <ClInclude Include="api\generic_peripheral\inventory.hpp">
+      <Filter>Header Files\api\generic_peripheral</Filter>
+    </ClInclude>
+    <ClInclude Include="api\generic_peripheral\energy_storage.hpp">
+      <Filter>Header Files\api\generic_peripheral</Filter>
+    </ClInclude>
+    <ClInclude Include="api\generic_peripheral\fluid_storage.hpp">
+      <Filter>Header Files\api\generic_peripheral</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\platform.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Computer.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\main.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\font.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\fs_standalone.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\gif.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="examples\raw_frame_reader.cpp">
+      <Filter>Other Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\favicon.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\platform\darwin.cpp">
+      <Filter>Source Files\platform</Filter>
+    </ClCompile>
+    <ClCompile Include="src\platform\emscripten.cpp">
+      <Filter>Source Files\platform</Filter>
+    </ClCompile>
+    <ClCompile Include="src\platform\linux.cpp">
+      <Filter>Source Files\platform</Filter>
+    </ClCompile>
+    <ClCompile Include="src\platform\win.cpp">
+      <Filter>Source Files\platform</Filter>
+    </ClCompile>
+    <ClCompile Include="src\peripheral\chest.cpp">
+      <Filter>Source Files\peripheral</Filter>
+    </ClCompile>
+    <ClCompile Include="src\peripheral\computer_p.cpp">
+      <Filter>Source Files\peripheral</Filter>
+    </ClCompile>
+    <ClCompile Include="src\peripheral\debugger.cpp">
+      <Filter>Source Files\peripheral</Filter>
+    </ClCompile>
+    <ClCompile Include="src\peripheral\debug_adapter.cpp">
+      <Filter>Source Files\peripheral</Filter>
+    </ClCompile>
+    <ClCompile Include="src\peripheral\drive.cpp">
+      <Filter>Source Files\peripheral</Filter>
+    </ClCompile>
+    <ClCompile Include="src\peripheral\energy.cpp">
+      <Filter>Source Files\peripheral</Filter>
+    </ClCompile>
+    <ClCompile Include="src\peripheral\modem.cpp">
+      <Filter>Source Files\peripheral</Filter>
+    </ClCompile>
+    <ClCompile Include="src\peripheral\monitor.cpp">
+      <Filter>Source Files\peripheral</Filter>
+    </ClCompile>
+    <ClCompile Include="src\peripheral\printer.cpp">
+      <Filter>Source Files\peripheral</Filter>
+    </ClCompile>
+    <ClCompile Include="src\peripheral\speaker.cpp">
+      <Filter>Source Files\peripheral</Filter>
+    </ClCompile>
+    <ClCompile Include="src\peripheral\speaker_sounds.cpp">
+      <Filter>Source Files\peripheral</Filter>
+    </ClCompile>
+    <ClCompile Include="src\peripheral\tank.cpp">
+      <Filter>Source Files\peripheral</Filter>
+    </ClCompile>
+    <ClCompile Include="src\terminal\CLITerminal.cpp">
+      <Filter>Source Files\terminal</Filter>
+    </ClCompile>
+    <ClCompile Include="src\terminal\HardwareSDLTerminal.cpp">
+      <Filter>Source Files\terminal</Filter>
+    </ClCompile>
+    <ClCompile Include="src\terminal\SDLTerminal.cpp">
+      <Filter>Source Files\terminal</Filter>
+    </ClCompile>
+    <ClCompile Include="src\terminal\RawTerminal.cpp">
+      <Filter>Source Files\terminal</Filter>
+    </ClCompile>
+    <ClCompile Include="src\terminal\TRoRTerminal.cpp">
+      <Filter>Source Files\terminal</Filter>
+    </ClCompile>
+    <ClCompile Include="src\apis\mounter.cpp">
+      <Filter>Source Files\apis</Filter>
+    </ClCompile>
+    <ClCompile Include="src\apis\periphemu.cpp">
+      <Filter>Source Files\apis</Filter>
+    </ClCompile>
+    <ClCompile Include="src\apis\config.cpp">
+      <Filter>Source Files\apis</Filter>
+    </ClCompile>
+    <ClCompile Include="src\apis\fs.cpp">
+      <Filter>Source Files\apis</Filter>
+    </ClCompile>
+    <ClCompile Include="src\apis\http.cpp">
+      <Filter>Source Files\apis</Filter>
+    </ClCompile>
+    <ClCompile Include="src\apis\os.cpp">
+      <Filter>Source Files\apis</Filter>
+    </ClCompile>
+    <ClCompile Include="src\apis\term.cpp">
+      <Filter>Source Files\apis</Filter>
+    </ClCompile>
+    <ClCompile Include="src\apis\handles\fs_handle.cpp">
+      <Filter>Source Files\apis\handles</Filter>
+    </ClCompile>
+    <ClCompile Include="src\apis\handles\http_handle.cpp">
+      <Filter>Source Files\apis\handles</Filter>
+    </ClCompile>
+    <ClCompile Include="src\runtime.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\termsupport.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\configuration.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\apis\peripheral.cpp">
+      <Filter>Source Files\apis</Filter>
+    </ClCompile>
+    <ClCompile Include="src\platform\macapp.mm">
+      <Filter>Source Files\platform</Filter>
+    </ClCompile>
+    <ClCompile Include="src\util.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\plugin.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\apis\redstone.cpp">
+      <Filter>Source Files\apis</Filter>
+    </ClCompile>
+    <ClCompile Include="src\platform\android.cpp">
+      <Filter>Source Files\platform</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="src\platform\CraftOS-PC 2.rc">
+      <Filter>Resource Files</Filter>
+    </ResourceCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <Manifest Include="resources\CraftOS-PC.exe.manifest">
+      <Filter>Resource Files</Filter>
+    </Manifest>
+  </ItemGroup>
+</Project>
