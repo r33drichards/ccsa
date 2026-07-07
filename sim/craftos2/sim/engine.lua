@@ -90,12 +90,12 @@ function M.install(world)
       local slots = {}
       for _, it in ipairs(items) do slots[#slots + 1] = normName(it) end
       chests[k] = slots
-      if dbl then
-        chests[dbl] = slots               -- both halves share one inventory
-        cap = cap or 54
-        chestCap[dbl] = cap
-      end
-      if cap then chestCap[k] = cap end
+      -- Real chests have a FIXED number of indexed slots (27 for a single chest,
+      -- 54 for a double), with gaps allowed. Seeded items occupy slots 1..n; the
+      -- rest start empty. Faithful suck/drop below depend on this fixed geometry.
+      cap = cap or (dbl and 54 or 27)
+      chestCap[k] = cap
+      if dbl then chests[dbl] = slots; chestCap[dbl] = cap end
     end
   end
 
@@ -169,6 +169,27 @@ function M.install(world)
       count = count - put
     end
     return 0
+  end
+
+  -- Store up to `count` of `name` into the TURTLE inventory, faithful to CC:Tweaked
+  -- storeItemsFromOffset: scan the 16 slots starting at `start` (wrapping), filling the
+  -- first compatible non-full stack or empty slot in slot order. Returns amount stored.
+  local function storeInTurtle(name, count, start)
+    local remaining = count
+    for j = 0, 15 do
+      local i = (start - 1 + j) % 16 + 1
+      local s = inv[i]
+      if s == nil then
+        inv[i] = { name = name, count = math.min(remaining, STACK) }
+        remaining = remaining - inv[i].count
+      elseif s.name == name and s.count < STACK then
+        local put = math.min(STACK - s.count, remaining)
+        s.count = s.count + put
+        remaining = remaining - put
+      end
+      if remaining <= 0 then break end
+    end
+    return count - remaining
   end
 
   -- The turtle API ----------------------------------------------------------
@@ -309,6 +330,11 @@ function M.install(world)
     local x, y, z = targetCoords(dir)
     return chests[key(x, y, z)]
   end
+  -- drop: push the selected slot's item into the chest. Faithful to CC:Tweaked
+  -- storeItems (offset 0): scan chest slots 1..cap and fill the FIRST compatible
+  -- non-full stack or empty slot, in slot order. Crucially, "first empty from slot 1"
+  -- means an item dropped right after a suck goes back into the slot the suck just
+  -- emptied — so a naive suck→inspect→drop loop never advances (matches a real turtle).
   local function dropDir(dir, count)
     local it = inv[selected]
     if not it then return false, "No items to drop" end
@@ -316,22 +342,55 @@ function M.install(world)
     local k = key(x, y, z)
     local c = chests[k]
     if not c then return false, "No inventory to drop into" end
-    if chestCap[k] and #c >= chestCap[k] then return false, "Chest is full" end
-    local n = math.min(count or it.count, it.count)
-    c[#c + 1] = { name = it.name, count = n }
-    it.count = it.count - n
+    local cap = chestCap[k] or 27
+    local want = math.min(count or it.count, it.count)
+    local remaining = want
+    for i = 1, cap do
+      local s = c[i]
+      if s == nil then
+        c[i] = { name = it.name, count = math.min(remaining, STACK) }
+        remaining = remaining - c[i].count
+      elseif s.name == it.name and s.count < STACK then
+        local put = math.min(STACK - s.count, remaining)
+        s.count = s.count + put
+        remaining = remaining - put
+      end
+      if remaining <= 0 then break end
+    end
+    local moved = want - remaining
+    it.count = it.count - moved
     if it.count <= 0 then inv[selected] = nil end
+    if moved == 0 then return false, "No space for items" end
     return true
   end
+  -- suck: pull from the chest into the turtle. Faithful to CC:Tweaked moveItem: take
+  -- the item type in the LOWEST-index occupied slot, up to one stack (64) — drawing
+  -- from that slot and any later slots holding the same item — and store it into the
+  -- turtle starting at the selected slot. The source slots it empties become gaps.
   local function suckDir(dir, count)
-    local c = chestAt(dir)
-    if not c or #c == 0 then return false, "No items to take" end
-    local slot = c[1]
-    local n = math.min(count or slot.count, slot.count)
-    local leftover = addItem(slot.name, n)
-    slot.count = slot.count - (n - leftover)
-    if slot.count <= 0 then table.remove(c, 1) end
-    return (n - leftover) > 0
+    local x, y, z = targetCoords(dir)
+    local k = key(x, y, z)
+    local c = chests[k]
+    if not c then return false, "No inventory to take from" end
+    local cap = chestCap[k] or 27
+    local firstName
+    for i = 1, cap do if c[i] then firstName = c[i].name; break end end
+    if not firstName then return false, "No items to take" end
+    local want = math.min(count or STACK, STACK)
+    local moved = 0
+    for i = 1, cap do
+      local s = c[i]
+      if s and s.name == firstName and want - moved > 0 then
+        local take = math.min(s.count, want - moved)
+        local stored = storeInTurtle(s.name, take, selected)
+        s.count = s.count - stored
+        if s.count <= 0 then c[i] = nil end
+        moved = moved + stored
+        if stored < take then break end -- turtle full
+      end
+    end
+    if moved == 0 then return false, "No space for items" end
+    return true
   end
   function turtle.drop(c)     return dropDir("forward", c) end
   function turtle.dropUp(c)   return dropDir("up", c) end
@@ -503,17 +562,20 @@ function M.install(world)
   -- turtle work — a false-positive verification. Mirrors sim.inventory()'s
   -- deepcopy. (github issues #1/#2)
   function sim.chest(x, y, z)
-    local c = chests[key(x, y, z)]
+    local k = key(x, y, z)
+    local c = chests[k]
     if c == nil then return nil end
+    local cap = chestCap[k] or 27
+    -- Fixed-slot view with GAPS preserved (empty slots are nil, exactly as a real
+    -- chest). ipairs() therefore stops at the first hole, so a program that leaves
+    -- gaps under-counts and fails a conservation invariant — as it should.
     local out = {}
-    for i = 1, #c do
+    for i = 1, cap do
       local s = c[i]
       if type(s) == "table" then
         local t = {}
-        for k, v in pairs(s) do t[k] = v end
+        for kk, v in pairs(s) do t[kk] = v end
         out[i] = t
-      else
-        out[i] = s
       end
     end
     return out
