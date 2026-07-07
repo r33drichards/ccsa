@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Pilot the turtle-making tool: a PURPOSE-BUILT, isolated pi session.
 #
-#   ./pi-turtle/pilot.sh                 # full tools + turtle_sim
-#   ./pi-turtle/pilot.sh --restricted    # sandbox: ONLY turtle_sim (no bash/edit/write)
+#   ./pi-turtle/pilot.sh                 # orchestrator: sim tools only (create_sim,
+#                                        #   create_sort_sim, turtle_sim, publish_gist) — NO bash/edit/write
+#   ./pi-turtle/pilot.sh --restricted    # sandbox: ONLY turtle_sim
 #
 # Isolation: PI_CODING_AGENT_DIR points at pi-turtle/agent, and --no-skills /
 # --no-context-files suppress your GLOBAL skills (cloudscape, electron, …) and
@@ -20,6 +21,7 @@ export PI_CODING_AGENT_DIR="$PWD/pi-turtle/agent" # isolated config (no global p
 ARGS=(--provider ollama --model glm-5.2 -a
       -e pi-turtle/index.ts
       --append-system-prompt "$(cat pi-turtle/system.md)"  # ADD to pi's default (keeps tool-calling scaffolding)
+      --exclude-tools bash,edit,write             # no shell-out, no file writes (read-only + sim tools stay)
       --no-skills                                 # drop GLOBAL skills…
       --no-context-files)                         # …and global ~/AGENTS.md / CLAUDE.md
 

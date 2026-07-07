@@ -74,7 +74,7 @@ buffered text — reliable for logs/CI. Each `turtle_sim` result arrives as a
 
 | command | tools the agent has |
 |---|---|
-| `./pi-turtle/pilot.sh` | `create_sim`, `turtle_sim`, `publish_gist` + read, edit, write, bash |
+| `./pi-turtle/pilot.sh` | `create_sim`, `create_sort_sim`, `turtle_sim`, `publish_gist` + read-only (`read`/`grep`/`find`/`ls`) — **no bash/edit/write**, so it can't shell out or write files, only work through the sim |
 | `./pi-turtle/pilot.sh --restricted` | `turtle_sim` only (sandbox) |
 
 The full-mode agent runs the whole flow from a plain-English request:
@@ -89,8 +89,14 @@ The full-mode agent runs the whole flow from a plain-English request:
 3. **`publish_gist`** — upload `prog.lua` + `spec.yaml` to a GitHub gist (via `gh`,
    which must be authenticated) and return the URL.
 
-Example prompt: *"Make a turtle that compresses `minecraft:iron_nugget` into
-`minecraft:iron_ingot` (9→1), then publish it."*
+Two task shapes are supported today, each with its own arena generator:
+- **Compression** (`create_sim`): input → `turtle.craft()` → output.
+- **In-place sorting** (`create_sort_sim`): consolidate + name-sort each adjacent
+  chest (above, below, front) without moving items between chests.
+
+Example prompts:
+- *"Make a turtle that compresses `minecraft:iron_nugget` into `minecraft:iron_ingot` (9→1), then publish it."*
+- *"Create an item-sort turtle that sorts the items in all adjacent chests in place."*
 
 Both agents load this repo's skills (recursively from `languages/skills/`): the
 CC:Tweaked domain skills (`cc-tweaked` API reference, `craftos-sim`,
