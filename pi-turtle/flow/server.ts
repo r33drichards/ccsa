@@ -12,6 +12,36 @@ import { Client, Connection } from "@temporalio/client";
 import { z } from "zod";
 import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { zEnv, arenaYaml, type Env } from "./arena-object.ts";
+const TRIGGER_DESC =
+  "Generate a working, sim-verified Minecraft CC:Tweaked (ComputerCraft) TURTLE PROGRAM for ANY turtle task. " +
+  "You DEFINE THE TEST (a structured 'arena' — see the input schema); an autonomous coding sub-agent then writes " +
+  "a Lua turtle program, runs it in a headless ComputerCraft simulator against every environment in your arena, " +
+  "reads the failing assertions, and rewrites the program until they ALL pass. You do NOT write the turtle Lua. " +
+  "Asynchronous: returns { workflowId, ui } immediately (ui = live dashboard); call research_status(workflowId) " +
+  "to get the finished program in files['prog.lua'].\n\n" +
+  "HOW TO DEFINE THE ARENA (input):\n" +
+  "- `task`: one free-text line describing what the turtle should do (guides the sub-agent). Any task — this is " +
+  "not a fixed menu.\n" +
+  "- `environments`: one or more simulated worlds the turtle must ALL pass (more/varied = more robust). Each has:\n" +
+  "  - `start` (optional): { x,y,z, facing, fuel }. Default { x:8,y:64,z:8, facing:'south', fuel:20000 }. The " +
+  "turtle's adjacent blocks are up=8,65,8 down=8,63,8 front(south)=8,64,9; it can turn to face other sides.\n" +
+  "  - `chests` (optional): map of \"x,y,z\" -> a list of { name, count } slots. For a DOUBLE chest (two blocks, " +
+  "one 54-slot inventory) use { items:[...], double:\"x,y,z\", capacity?:N }.\n" +
+  "  - `recipes` (optional): enable turtle.craft(); each { output:{name,count}, shapeless:{ item:count } } (N grid " +
+  "slots of an item) or { output, shaped:[9 item names or ''] }.\n" +
+  "  - `test`: a Lua snippet (the body of test(sim)) that asserts the INVARIANTS a correct turtle must satisfy. " +
+  "sim API: sim.chest(x,y,z)->list of {name,count} or nil; sim.inventory()->[1..16] of {name,count} or nil; " +
+  "sim.assertEq(actual,expected,msg); sim.assertTrue(cond,msg); sim.assertPos(x,y,z,msg); sim.assertFacing(f,msg); " +
+  "sim.block(x,y,z). Lua math.* is available.\n\n" +
+  "WRITE INVARIANTS, NOT THE ANSWER: assert PROPERTIES any correct turtle has (conservation: nothing lost or " +
+  "duplicated; maximality; terminal state e.g. inventory emptied; purity: only expected items) rather than a " +
+  "single hardcoded expected number — that forces a robust turtle across your environments.\n\n" +
+  "EXAMPLE ARENAS (illustrative, not the only tasks): a COMPRESSOR (pull an item, turtle.craft() N->1, deposit; " +
+  "invariants = conservation + inventory emptied + chest purity), an in-place SORTER (per adjacent chest: same " +
+  "items merged to ceil(count/64) stacks and slots ordered by name), a FARM HARVESTER, a miner, a builder — " +
+  "anything you can express as a world + invariant test.";
+
 
 const REPO = join(import.meta.dirname, "..", "..");
 const address = process.env.TEMPORAL_ADDRESS || "localhost:7233";
@@ -70,22 +100,17 @@ function buildServer(): McpServer {
   const server = new McpServer({ name: "turtle-research", version: "0.1.0" });
 
   server.registerTool("research_trigger", {
-    description:
-      "Generate a working Minecraft CC:Tweaked (ComputerCraft) TURTLE PROGRAM from a test spec. " +
-      "This is step 1 of 2 (asynchronous). You provide an `arena.yaml` — a simulation spec (YAML) that " +
-      "describes a turtle task as one or more sim 'environments', each with a `world_lua` block whose " +
-      "`test(sim)` function asserts the INVARIANTS a correct turtle must satisfy (e.g. items conserved, " +
-      "inventory emptied, chest sorted). This tool launches an autonomous coding agent that writes a Lua " +
-      "turtle program, runs it against every environment in the arena, reads the failing assertions, and " +
-      "rewrites it until they ALL pass. It returns immediately with { workflowId, ui } — `ui` is a live " +
-      "dashboard URL to watch it work. It does NOT return the program here; call `research_status` with " +
-      "the workflowId to get it. Use this whenever you need a correct, sim-verified CC:Tweaked turtle for a " +
-      "task you can express as an arena.yaml (a craftgen-style sim spec).",
-    inputSchema: { arena: z.string().describe("The full arena.yaml sim spec: a YAML doc with a `sim.nodes` list, each node a world_lua returning { start, chests, test=function(sim) ...assertions... end }. This defines the turtle task by its invariants.") },
-  }, async ({ arena }: { arena: string }) => {
+    description: TRIGGER_DESC,
+    inputSchema: {
+      task: z.string().describe("One free-text line: what the turtle must do (guides the sub-agent)."),
+      environments: z.array(zEnv).min(1).describe("One or more sim environments the turtle must ALL pass. Each: { start?, chests?, recipes?, test }. `test` is a Lua snippet asserting invariants. Use several varied environments (edge cases) for a robust result."),
+      timeoutMs: z.number().int().optional().describe("Per-environment sim timeout ms (default 60000)."),
+    },
+  }, async ({ task, environments, timeoutMs }: { task: string; environments: Env[]; timeoutMs?: number }) => {
+    const arena = arenaYaml(task, environments, timeoutMs ?? 60000);
     const workflowId = "turtle-" + Math.random().toString(36).slice(2, 10);
     await client.workflow.start("researchWorkflow", { args: [arena], taskQueue, workflowId });
-    const body = { workflowId, ui: `${uiBase}/namespaces/default/workflows/${workflowId}` };
+    const body = { workflowId, ui: `${uiBase}/namespaces/default/workflows/${workflowId}`, environments: environments.length };
     return { content: [{ type: "text" as const, text: JSON.stringify(body) }], structuredContent: body };
   });
 
