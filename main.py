@@ -4,6 +4,7 @@
 # dependencies = [
 #     "ollama",
 #     "httpx",
+#     "python-dotenv",
 # ]
 # ///
 """Naive generic multi-MCP mini-swe-agent, driven by Ollama Cloud.
@@ -55,7 +56,12 @@ import uuid
 from pathlib import Path
 
 import httpx
+from dotenv import load_dotenv
 from ollama import Client
+
+# Load OLLAMA_API_KEY (and friends) from a local .env if present. A real env var
+# still wins — load_dotenv() does not override an already-set variable.
+load_dotenv(Path(__file__).with_name(".env"))
 
 
 SYSTEM = (

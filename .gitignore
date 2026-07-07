@@ -1,4 +1,8 @@
 .mcp-work/
+.env
+.env.*
+!.env.example
+spike/**/*.log
 __pycache__/
 *.pyc
 result
@@ -7,3 +11,4 @@ bin/mcp-v8
 bin/*.gz
 .DS_Store
 **/.DS_Store
+logs/

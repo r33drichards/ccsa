@@ -1,0 +1,63 @@
+# Spike sim spec — a trimmed melon-compressor (2 nodes, 5 postconditions) used to
+# demonstrate a pi-autoresearch loop whose metric comes from the sandboxed sim.
+# The program under optimization is the host file prog.lua (@file:prog.lua),
+# which pi-autoresearch edits/commits/reverts; measure.sh ships it into /work.
+task: >-
+  Stationary crafty turtle: pull minecraft:melon_slice from the chest ABOVE,
+  compress 9 -> 1 into minecraft:melon via turtle.craft(), drop blocks into the
+  chest BELOW, return leftover slices (<9) upward. Edit prog.lua until every sim
+  postcondition passes.
+
+sim:
+  timeout_ms: 60000
+  nodes:
+    - label: sim_exact          # 63 slices -> 7 blocks, 0 leftover (3 assertions)
+      collect: true
+      program: "@file:prog.lua"
+      world_lua: |
+        local N = 63
+        return {
+          start = { x = 8, y = 64, z = 8, facing = 'south', fuel = 20000 },
+          chests = {
+            ['8,65,8'] = { { name = 'minecraft:melon_slice', count = 63 } },
+            ['8,63,8'] = {},
+          },
+          test = function(sim)
+            local function sumIn(x, y, z, name)
+              local ch, t = sim.chest(x, y, z), 0
+              if ch then for _, it in ipairs(ch) do if it.name == name then t = t + it.count end end end
+              return t
+            end
+            sim.assertEq(sumIn(8, 63, 8, 'minecraft:melon'), math.floor(N / 9), 'melon blocks in lower chest')
+            sim.assertEq(sumIn(8, 65, 8, 'minecraft:melon_slice'), N % 9, 'leftover slices back in upper chest')
+            local inv, held = sim.inventory(), 0
+            for i = 1, 16 do if inv[i] then held = held + inv[i].count end end
+            sim.assertEq(held, 0, 'turtle inventory emptied')
+          end,
+        }
+
+    - label: sim_remainder      # 140 slices -> 15 blocks, 5 leftover (2 assertions)
+      collect: true
+      program: "@file:prog.lua"
+      world_lua: |
+        local N = 140
+        return {
+          start = { x = 8, y = 64, z = 8, facing = 'south', fuel = 20000 },
+          chests = {
+            ['8,65,8'] = {
+              { name = 'minecraft:melon_slice', count = 64 },
+              { name = 'minecraft:melon_slice', count = 64 },
+              { name = 'minecraft:melon_slice', count = 12 },
+            },
+            ['8,63,8'] = {},
+          },
+          test = function(sim)
+            local function sumIn(x, y, z, name)
+              local ch, t = sim.chest(x, y, z), 0
+              if ch then for _, it in ipairs(ch) do if it.name == name then t = t + it.count end end end
+              return t
+            end
+            sim.assertEq(sumIn(8, 63, 8, 'minecraft:melon'), math.floor(N / 9), 'melon blocks in lower chest')
+            sim.assertEq(sumIn(8, 65, 8, 'minecraft:melon_slice'), N % 9, 'leftover slices back in upper chest')
+          end,
+        }

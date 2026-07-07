@@ -5,6 +5,7 @@
 #     "ollama",
 #     "httpx",
 #     "pyyaml",
+#     "python-dotenv",
 # ]
 # ///
 """craftgen — generate a CC:Tweaked program that passes a declarative sim test.
@@ -49,7 +50,12 @@ from pathlib import Path
 
 import httpx
 import yaml
+from dotenv import load_dotenv
 from ollama import Client
+
+# Load OLLAMA_API_KEY (and friends) from a local .env if present. Real env vars
+# still win — load_dotenv() does not override an already-set variable.
+load_dotenv(Path(__file__).with_name(".env"))
 
 # Reuse the MCP + agent core from the mini agent (same directory).
 import main as mini
