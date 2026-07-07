@@ -24,7 +24,9 @@ export const TOOLS = [
       description:
         "Evaluate JavaScript in the languages sandbox (persistent, isolated /work with the craftos engine and " +
         "the full skills tree). Use it to inspect the sandbox, read a skill file, or run the craftos engine " +
-        "yourself before submitting. Returns only what you console.log(...).",
+        "yourself before submitting. Returns only what you console.log(...). " +
+        "`fs`, `craftos`, and `picat` are READY GLOBALS — call them directly (e.g. await fs.readFile(path,'utf8')). " +
+        "There is NO module system: NEVER require('fs') or import anything — require/import are disabled and throw.",
       parameters: {
         type: "object",
         properties: { code: { type: "string", description: "JavaScript to evaluate in the sandbox." } },

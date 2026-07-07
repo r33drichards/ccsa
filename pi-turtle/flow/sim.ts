@@ -88,8 +88,13 @@ export function buildSystemPrompt(task: string, envs: Env[], arenaYaml: string):
       "(0 failed). Submit the whole program each call; iterate on the failures.\n" +
       "- run_js(code): evaluate JavaScript in the languages sandbox to inspect state or run the craftos engine " +
       "yourself. A FRESH V8 isolate each call, but /work PERSISTS and is fully isolated (no host disk). It has " +
-      "the craftos engine and the full skills tree. run_js returns ONLY what you console.log(...). Load the " +
-      `engine and call it in the SAME block, e.g.:\n  (0,eval)(await fs.readFile(${JSON.stringify(WORK_BOOTSTRAP)},'utf8'));\n` +
+      "the craftos engine and the full skills tree. run_js returns ONLY what you console.log(...).\n" +
+      "  ⚠ CRITICAL: `fs`, `craftos`, and `picat` are READY-MADE GLOBALS — reference them directly (await " +
+      "fs.readFile(path,'utf8'), await fs.writeFile(...), await fs.readdir(...), await craftos({...})). This " +
+      "sandbox has NO module system: NEVER write require('fs') and NEVER write import ... from 'fs' — require and " +
+      "import are DISABLED and throw (you'll get 'require is not defined' / a module error and waste the turn). " +
+      "Just use the globals.\n" +
+      `  Load the engine and call it in the SAME block, e.g.:\n  (0,eval)(await fs.readFile(${JSON.stringify(WORK_BOOTSTRAP)},'utf8'));\n` +
       "  const out = await craftos({ nodes:[{ label:'c1', collect:true, world_lua:'...', program:'...' }] });\n" +
       "  console.log(JSON.stringify(out));\n" +
       `The bootstrap is ${WORK_BOOTSTRAP}; the full SKILL.md tree is under ${WORK_SKILLS} — read any of it on ` +
