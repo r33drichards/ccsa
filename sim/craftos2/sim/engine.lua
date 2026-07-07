@@ -65,6 +65,7 @@ local M = {}
 function M.install(world)
   world = world or {}
   local start = world.start or {}
+  local networked = world.networked   -- arena wired up helper nodes (e.g. gps hosts)
   local generate = world.generate
   local unbreakable = world.unbreakable or { ["minecraft:bedrock"] = true }
 
@@ -202,6 +203,8 @@ function M.install(world)
       fuel = fuel - 1
     end
     pos.x, pos.y, pos.z = nx, ny, nz
+    -- mirror position to the wireless modem so gps.locate() tracks a moving turtle
+    if networked and _G.setpos then _G.setpos(pos.x, pos.y, pos.z) end
     return true
   end
 
@@ -644,6 +647,11 @@ function M.install(world)
     return sim.passed, sim.failed
   end
 
+  -- GPS/networking: publish our starting position so gps.locate() resolves it from
+  -- the turtle program. The wireless modem itself is created by the arena (prepended
+  -- to the turtle program — periphemu.create can't run this early). Moves keep it in
+  -- sync via tryMove's setpos. Guarded; single-node sims are unaffected.
+  if networked and _G.setpos then _G.setpos(pos.x, pos.y, pos.z) end
   _G.turtle = turtle
   _G.sim = sim
   return turtle, sim

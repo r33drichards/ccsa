@@ -93,6 +93,14 @@ const TRIGGER_DESC =
   "For a DOUBLE chest (two blocks sharing one 54-slot inventory): { items:[{name,count}...], double:\"x,y,z\", capacity?:N }.\n" +
   "  - `recipes` (optional): needed only if the turtle must turtle.craft(). Each: { output:{name,count}, " +
   "shapeless:{ \"item\": N } } (N grid slots of that item) or { output, shaped:[ nine item names or '' ] }.\n" +
+  "  - `nodes` (optional): extra sim computers YOU wire up alongside the turtle — this is how you build MULTI-NODE " +
+  "scenarios like GPS. Each: { position:[x,y,z], program }. Every node gets these injected globals: NET (this run's " +
+  "wireless network id), emit(...), setpos(x,y,z), done(); open a wireless modem with " +
+  "periphemu.create('top','modem',NET,true). When you add nodes, the turtle auto-equips a modem and publishes its " +
+  "position, so gps.locate() works from the turtle program.\n" +
+  "  - `nilSim` (optional bool): run the turtle program with the `sim` global NIL'd, forcing the REAL-device code " +
+  "path (gps.locate()/peripherals/config instead of sim.*). The invariant test still verifies the real end state. " +
+  "Pair with `nodes` (gps hosts) to prove the turtle navigates by GPS, not by the simulator.\n" +
   "  - `test`: a short Lua snippet — the body of test(sim) — asserting the invariants. This is the ONLY Lua you " +
   "write (it checks the world AFTER the turtle runs; it is NOT the turtle program). sim API available inside it: " +
   "sim.chest(x,y,z) -> list of {name,count} or nil; sim.inventory() -> [1..16] of {name,count} or nil; " +
@@ -107,7 +115,20 @@ const TRIGGER_DESC =
   "  { \"task\": \"sort each adjacent chest in place\",\n" +
   "    \"environments\": [ { \"chests\": { \"8,64,9\": [ {\"name\":\"minecraft:cobblestone\",\"count\":40}, " +
   "{\"name\":\"minecraft:dirt\",\"count\":10}, {\"name\":\"minecraft:cobblestone\",\"count\":30} ] },\n" +
-  "        \"test\": \"local ch=sim.chest(8,64,9)\\nlocal counts,slots,sorted,prev={},{},true,nil\\nif ch then for _,it in ipairs(ch) do counts[it.name]=(counts[it.name] or 0)+it.count slots[it.name]=(slots[it.name] or 0)+1 if prev and it.name<prev then sorted=false end prev=it.name end end\\nsim.assertEq(counts['minecraft:cobblestone'] or 0,70,'cobble preserved')\\nsim.assertEq(counts['minecraft:dirt'] or 0,10,'dirt preserved')\\nsim.assertEq(slots['minecraft:cobblestone'] or 0,2,'cobble consolidated')\\nsim.assertTrue(sorted,'sorted by name')\" } ] }";
+  "        \"test\": \"local ch=sim.chest(8,64,9)\\nlocal counts,slots,sorted,prev={},{},true,nil\\nif ch then for _,it in ipairs(ch) do counts[it.name]=(counts[it.name] or 0)+it.count slots[it.name]=(slots[it.name] or 0)+1 if prev and it.name<prev then sorted=false end prev=it.name end end\\nsim.assertEq(counts['minecraft:cobblestone'] or 0,70,'cobble preserved')\\nsim.assertEq(counts['minecraft:dirt'] or 0,10,'dirt preserved')\\nsim.assertEq(slots['minecraft:cobblestone'] or 0,2,'cobble consolidated')\\nsim.assertTrue(sorted,'sorted by name')\" } ] }\n\n" +
+  "EXAMPLE — a GPS test env (you wire up 4 GPS host computers around the turtle via `nodes`, and set `nilSim` so the " +
+  "program must locate itself with gps.locate() like a real turtle, not sim.pos()):\n" +
+  "  { \"task\": \"navigate to the target using GPS\",\n" +
+  "    \"environments\": [ { \"start\": {\"x\":8,\"y\":64,\"z\":8,\"facing\":\"south\",\"fuel\":100}, \"nilSim\": true,\n" +
+  "        \"nodes\": [\n" +
+  "          {\"position\":[28,64,8],   \"program\":\"periphemu.create('top','modem',NET,true) shell.run('gps','host',28,64,8)\"},\n" +
+  "          {\"position\":[8,84,8],    \"program\":\"periphemu.create('top','modem',NET,true) shell.run('gps','host',8,84,8)\"},\n" +
+  "          {\"position\":[8,64,28],   \"program\":\"periphemu.create('top','modem',NET,true) shell.run('gps','host',8,64,28)\"},\n" +
+  "          {\"position\":[-12,44,-12],\"program\":\"periphemu.create('top','modem',NET,true) shell.run('gps','host',-12,44,-12)\"} ],\n" +
+  "        \"test\": \"sim.assertPos(8,64,11,'reached the target using gps.locate for position')\" } ] }\n" +
+  "The 4 GPS hosts MUST be non-coplanar (offsets on +x, +y, +z and one opposite corner as above) or gps.locate() " +
+  "returns nil. The turtle program calls gps.locate() to read its position; the arena equips the modem and mirrors " +
+  "the turtle's movement to it automatically.";
 
 function buildServer(): McpServer {
   const server = new McpServer({ name: "turtle-research", version: "0.1.0" });

@@ -44,12 +44,30 @@ export const WORK_PROG = "/work/prog.lua";
 // env, print each node's output as JSON. The engine's test(sim) emits `ok -`/`FAIL -`
 // lines and a `SIM_RESULT: PASS|FAIL` per node. Prints {status:'missing'} if no program.
 export function validatorFromWorkCode(envs: Env[], progPath = WORK_PROG): string {
-  const nodes = envs.map((e, i) => ({ label: envLabel(e, i), collect: true, world_lua: envToWorldLua(e) }));
+  // Naive data pipe: each env becomes a set of multi-node craftos computers — the
+  // turtle node (runs the agent's /work/prog.lua) plus any caller-defined helper
+  // nodes (e.g. gps hosts). Only turtle nodes get prog.lua; nilSim turtle nodes run
+  // it with `sim` shadowed to exercise the real-device path.
+  const nodes: any[] = [];
+  envs.forEach((e, i) => {
+    const label = envLabel(e, i);
+    const s = { x: 8, y: 64, z: 8, ...(e.start || {}) } as { x: number; y: number; z: number };
+    const networked = !!(e.nodes && e.nodes.length);
+    nodes.push({ label, collect: true, position: [s.x, s.y, s.z], world_lua: envToWorldLua(e), __turtle: true, __nilSim: !!e.nilSim, __net: networked });
+    (e.nodes || []).forEach((n, j) => {
+      const hn: any = { label: n.label || `${label}_n${j}`, program: n.program };
+      if (n.position) hn.position = n.position;
+      nodes.push(hn);
+    });
+  });
   return (
     `(0,eval)(await fs.readFile(${JSON.stringify(WORK_BOOTSTRAP)},'utf8'));\n` +
     `let __prog; try { __prog = await fs.readFile(${JSON.stringify(progPath)},'utf8'); } catch (e) { __prog = undefined; }\n` +
     `if (__prog === undefined || __prog === '') { console.log(JSON.stringify({ status:'missing' })); }\n` +
-    `else { const nodes = ${JSON.stringify(nodes)}; for (const n of nodes) n.program = __prog;\n` +
+    `else { const nodes = ${JSON.stringify(nodes)};\n` +
+    // Networked turtle: the arena equips a wireless modem and gives the gps hosts a
+    // beat to start listening before the program pings (transparent env plumbing).
+    `  for (const n of nodes) { if (n.__turtle) { let __pre = n.__net ? "periphemu.create('top','modem',NET,true)\\nsleep(1)\\n" : ''; if (n.__nilSim) __pre += 'local sim = nil\\n'; n.program = __pre + __prog; delete n.__turtle; delete n.__nilSim; delete n.__net; } }\n` +
     `  const out = await craftos({ nodes });\n` +
     `  console.log(JSON.stringify({ nodes: out.nodes.map(n => ({ label: n.label, output: n.output })) })); }\n`
   );

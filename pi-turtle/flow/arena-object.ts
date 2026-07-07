@@ -13,11 +13,19 @@ export const zRecipe = z.object({
   shapeless: z.record(z.string(), z.number().int()).optional(),
   shaped: z.array(z.string()).optional(),
 });
+// An extra sim computer the caller wires up alongside the turtle (e.g. a GPS host).
+export const zNode = z.object({
+  label: z.string().optional(),
+  position: z.array(z.number()).length(3).optional().describe("[x,y,z] world position (modem/GPS distance)."),
+  program: z.string().describe("Lua for this node. Injected globals: NET (this run's wireless net), emit(...), setpos(x,y,z), done(). Open a wireless modem with periphemu.create('top','modem',NET,true)."),
+});
 export const zEnv = z.object({
   name: z.string().optional(),
   start: z.object({ x: z.number(), y: z.number(), z: z.number(), facing: z.string(), fuel: z.number() }).partial().optional(),
   chests: z.record(z.string(), zChest).optional(),
   recipes: z.array(zRecipe).optional(),
+  nodes: z.array(zNode).optional().describe("Extra computers to run alongside the turtle — YOU wire up multi-node setups like GPS (4 non-coplanar host nodes). The turtle auto-equips a wireless modem and publishes its position when `nodes` is set, so gps.locate() works from the turtle program."),
+  nilSim: z.boolean().optional().describe("Run the turtle program with the `sim` global NIL'd — exercises the REAL-device path, so the program must use gps.locate()/peripherals/config, not sim.*. The invariant test still verifies the real end state. Pair with `nodes` (gps hosts) to test GPS navigation."),
   test: z.string().describe("Lua body of test(sim): invariant assertions (see tool description for the sim API)."),
 });
 export type Env = z.infer<typeof zEnv>;
@@ -45,8 +53,9 @@ export function envToWorldLua(e: Env): string {
       }).join(", ") + " }"
     : "{}";
   const recipes = e.recipes && e.recipes.length ? lua(e.recipes) : null;
+  const networked = e.nodes && e.nodes.length ? "\n  networked = true," : "";
   return `return {
-  start = { x = ${s.x}, y = ${s.y}, z = ${s.z}, facing = '${s.facing}', fuel = ${s.fuel} },
+  start = { x = ${s.x}, y = ${s.y}, z = ${s.z}, facing = '${s.facing}', fuel = ${s.fuel} },${networked}
   chests = ${chests},${recipes ? `\n  recipes = ${recipes},` : ""}
   test = function(sim)
 ${e.test.split("\n").map((l) => "    " + l).join("\n")}
