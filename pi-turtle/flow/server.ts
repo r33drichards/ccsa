@@ -118,12 +118,14 @@ function buildServer(): McpServer {
       task: z.string().describe("One plain-English line: what the turtle must do (guides the sub-agent)."),
       environments: z.array(zEnv).min(1).describe("One or more sim worlds the turtle must ALL pass. Each: { start?, chests?, recipes?, test }. `test` is a short Lua snippet asserting invariants (this is the ONLY Lua you write; you do NOT write the turtle program). Use several varied environments for a robust result."),
       timeoutMs: z.number().int().optional().describe("Per-environment sim timeout ms (default 60000)."),
+      maxSteps: z.number().int().positive().optional().describe("Max agent turns (LLM calls) before giving up and returning the best attempt (default 60)."),
+      maxTokens: z.number().int().positive().optional().describe("Total LLM token budget for the whole job (sum over every model call incl. compaction summaries). When exceeded, the loop stops and returns the best attempt. Default: unbounded."),
     },
-  }, async ({ task, environments, timeoutMs }: { task: string; environments: Env[]; timeoutMs?: number }) => {
+  }, async ({ task, environments, timeoutMs, maxSteps, maxTokens }: { task: string; environments: Env[]; timeoutMs?: number; maxSteps?: number; maxTokens?: number }) => {
     const arena = arenaYaml(task, environments, timeoutMs ?? 60000);
     const systemPrompt = buildSystemPrompt(task, environments, arena);
     const workflowId = "turtle-" + Math.random().toString(36).slice(2, 10);
-    await client.workflow.start("researchWorkflow", { args: [{ task, envs: environments, systemPrompt }], taskQueue, workflowId });
+    await client.workflow.start("researchWorkflow", { args: [{ task, envs: environments, systemPrompt, maxSteps, maxTokens }], taskQueue, workflowId });
     const body = { workflowId, ui: `${uiBase}/namespaces/default/workflows/${workflowId}`, environments: environments.length };
     return { content: [{ type: "text" as const, text: JSON.stringify(body) }], structuredContent: body };
   });
@@ -146,10 +148,10 @@ function buildServer(): McpServer {
     else if (desc.status.name === "COMPLETED") {
       const r: any = await h.result();
       out = r.passed
-        ? { type: "ok", score: `${r.score}/${r.total}`, attempts: r.attempts, ui, files: { "prog.lua": r.program } }
+        ? { type: "ok", score: `${r.score}/${r.total}`, attempts: r.attempts, steps: r.steps, tokens: r.tokens, ui, files: { "prog.lua": r.program } }
         // never fully passed -> ERROR state; the best attempt is metadata, not a deliverable
         : { type: "error", msg: `did not pass — best ${r.score}/${r.total} invariants after ${r.attempts} attempts`,
-            score: r.score, total: r.total, attempts: r.attempts, ui,
+            score: r.score, total: r.total, attempts: r.attempts, steps: r.steps, tokens: r.tokens, ui,
             ...(r.program ? { files: { "prog.lua": r.program } } : {}) };
     } else out = { type: "error", msg: `workflow ${desc.status.name}`, ui };
     return { content: [{ type: "text" as const, text: JSON.stringify(out) }], structuredContent: out };

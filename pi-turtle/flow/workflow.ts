@@ -20,10 +20,10 @@ const { callLlm, summarize } = proxyActivities<typeof acts>({
   retry: { maximumAttempts: 3, initialInterval: "3 seconds", maximumInterval: "20 seconds" },
 });
 
-export type ResearchInput = { task: string; envs: Env[]; systemPrompt: string; model?: string; maxSteps?: number };
-export type ResearchResult = { passed: boolean; score: number; total: number; program: string; attempts: number };
+export type ResearchInput = { task: string; envs: Env[]; systemPrompt: string; model?: string; maxSteps?: number; maxTokens?: number };
+export type ResearchResult = { passed: boolean; score: number; total: number; program: string; attempts: number; steps: number; tokens: number };
 type Best = { program: string; score: number; total: number; passed: boolean };
-type LoopState = { messages: any[]; step: number; best: Best; attempts: number; opened: boolean; summary: string };
+type LoopState = { messages: any[]; step: number; best: Best; attempts: number; opened: boolean; summary: string; tokens: number };
 
 const COMPACT_EVERY = 30; // continue-as-new cadence, to bound Temporal event-history size
 
@@ -86,7 +86,8 @@ async function compactIfNeeded(s: LoopState): Promise<void> {
   // 2) fold the evicted middle into the rolling summary (the LLM activity)
   const evicted = s.messages.slice(2, tailStart);
   if (evicted.length > 0) {
-    s.summary = (await summarize({ oldSummary: s.summary, evicted, task: String(s.messages[1].content) })).summary;
+    const sum = await summarize({ oldSummary: s.summary, evicted, task: String(s.messages[1].content) });
+    s.summary = sum.summary; s.tokens += sum.tokens;
     s.messages = [s.messages[0], s.messages[1], ...s.messages.slice(tailStart)];
   }
   // 3) if the tail alone still exceeds target, fold its oldest groups one at a time (keep a min tail)
@@ -94,7 +95,8 @@ async function compactIfNeeded(s: LoopState): Promise<void> {
     const g = groupsFrom(s.messages, 2);
     if (g.length <= MIN_TAIL_GROUPS) break;
     const chunk = s.messages.slice(2, g[0].end);
-    s.summary = (await summarize({ oldSummary: s.summary, evicted: chunk, task: String(s.messages[1].content) })).summary;
+    const sum = await summarize({ oldSummary: s.summary, evicted: chunk, task: String(s.messages[1].content) });
+    s.summary = sum.summary; s.tokens += sum.tokens;
     s.messages = [s.messages[0], s.messages[1], ...s.messages.slice(g[0].end)];
   }
 }
@@ -109,8 +111,9 @@ export async function researchWorkflow(input: ResearchInput, state?: LoopState):
       { role: "system", content: input.systemPrompt },
       { role: "user", content: `${input.task}\n\nBegin. Write the program and call turtle_sim to test it; read the failing invariants and iterate until it reports 0 failed.` },
     ],
-    step: 0, best: { program: "", score: -1, total: 0, passed: false }, attempts: 0, opened: false, summary: "",
+    step: 0, best: { program: "", score: -1, total: 0, passed: false }, attempts: 0, opened: false, summary: "", tokens: 0,
   };
+  const maxTokens = input.maxTokens ?? 0; // 0 = unbounded
 
   if (!s.opened) { await openSandbox(workSession); s.opened = true; }
 
@@ -120,10 +123,11 @@ export async function researchWorkflow(input: ResearchInput, state?: LoopState):
       const p = await runJs({ workSession, code: `console.log(await fs.readFile('/work/prog.lua','utf8').catch(()=>''))` });
       s.best.program = p.text.trim();
     }
-    return { passed: s.best.passed, score: Math.max(s.best.score, 0), total: s.best.total, program: s.best.program, attempts: s.attempts };
+    return { passed: s.best.passed, score: Math.max(s.best.score, 0), total: s.best.total, program: s.best.program, attempts: s.attempts, steps: s.step, tokens: s.tokens };
   };
 
   while (s.step < maxSteps) {
+    if (maxTokens && s.tokens >= maxTokens) break; // token budget exhausted -> return best-so-far
     await compactIfNeeded(s); // bind to glm-5.2's window via rolling-summary compaction
 
     // A retry-exhausted activity must NOT hard-FAIL the whole research: end gracefully and
@@ -132,6 +136,7 @@ export async function researchWorkflow(input: ResearchInput, state?: LoopState):
     try {
       a = await callLlm({ messages: sendView(s), tools: TOOLS, model });
     } catch { break; } // e.g. glm timeout after retries -> stop, return best-so-far
+    s.tokens += a.tokens;
 
     s.messages.push(a.toolCalls.length
       ? { role: "assistant", content: a.content, tool_calls: a.toolCalls.map((tc) => ({ id: tc.id, type: "function", function: { name: tc.name, arguments: tc.arguments } })) }

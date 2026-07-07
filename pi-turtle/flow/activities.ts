@@ -31,7 +31,7 @@ export async function openSandbox(workSession: string): Promise<{ seeded: number
   return { seeded: Object.keys(files).length };
 }
 
-export type LlmOut = { content: string; toolCalls: { id: string; name: string; arguments: string }[] };
+export type LlmOut = { content: string; toolCalls: { id: string; name: string; arguments: string }[]; tokens: number };
 
 // One completion. Env access is allowed in activities; Temporal owns retries.
 export async function callLlm(input: { messages: unknown[]; tools: unknown[]; model: string }): Promise<LlmOut> {
@@ -50,6 +50,7 @@ export async function callLlm(input: { messages: unknown[]; tools: unknown[]; mo
   return {
     content: m.content ?? "",
     toolCalls: (m.tool_calls ?? []).map((tc: any) => ({ id: tc.id, name: tc.function?.name, arguments: tc.function?.arguments ?? "{}" })),
+    tokens: j.usage?.total_tokens ?? 0,
   };
 }
 
@@ -94,7 +95,7 @@ function renderMessages(msgs: any[]): string {
   }).join("\n\n");
 }
 
-export async function summarize(input: { oldSummary: string; evicted: any[]; task: string }): Promise<{ summary: string }> {
+export async function summarize(input: { oldSummary: string; evicted: any[]; task: string }): Promise<{ summary: string; tokens: number }> {
   const key = process.env.OLLAMA_API_KEY;
   if (!key) throw new Error("OLLAMA_API_KEY not set");
   const model = process.env.TURTLEFLOW_MODEL || "glm-5.2";
@@ -111,7 +112,7 @@ export async function summarize(input: { oldSummary: string; evicted: any[]; tas
   });
   if (!r.ok) throw new Error(`summarize ${r.status}: ${(await r.text()).slice(0, 300)}`);
   const j: any = await r.json();
-  return { summary: (j.choices?.[0]?.message?.content ?? "").trim() };
+  return { summary: (j.choices?.[0]?.message?.content ?? "").trim(), tokens: j.usage?.total_tokens ?? 0 };
 }
 
 export type SimObs = SimResult & { observation: string };
