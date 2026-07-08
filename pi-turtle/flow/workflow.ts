@@ -10,7 +10,7 @@ import { TOOLS } from "./tools.ts";
 import { estTokens, sendView, COMPACT_THRESHOLD, toolsSchemaTok } from "./compaction.ts";
 import type { Env } from "./arena-object.ts";
 
-const { openSandbox, turtleSim, checkCompleted, runJs, checkEngine } = proxyActivities<typeof acts>({
+const { openSandbox, turtleSim, checkCompleted, runJs, checkEngine, writeProg } = proxyActivities<typeof acts>({
   startToCloseTimeout: "15 minutes",
   retry: { maximumAttempts: 6, initialInterval: "2 seconds", maximumInterval: "30 seconds" },
 });
@@ -31,7 +31,14 @@ const TOOLS_SCHEMA_TOK = toolsSchemaTok(TOOLS); // static tool-schema token cost
 export type ResearchInput = { task: string; envs: Env[]; systemPrompt: string; model?: string; maxSteps?: number; maxTokens?: number };
 export type ResearchResult = { passed: boolean; score: number; total: number; program: string; attempts: number; steps: number; tokens: number; report: string };
 type Best = { program: string; score: number; total: number; passed: boolean };
-type LoopState = { messages: any[]; step: number; best: Best; attempts: number; opened: boolean; summary: string; tokens: number; lastObs: string; stall: number };
+// one entry per program the agent tested (deterministic autoresearch log — see ledgerDigest)
+type Experiment = { n: number; score: number; total: number; failing: string[] };
+type LoopState = { messages: any[]; step: number; best: Best; attempts: number; opened: boolean; summary: string; tokens: number; lastObs: string; stall: number; ledger: Experiment[] };
+
+// The compaction threshold used by pre-autoresearch histories. New executions compact at the
+// full-window COMPACT_THRESHOLD (~702K); in-flight ones replay with this legacy value so the
+// needsCompaction gate — which decides WHEN the compact activity runs — stays replay-stable.
+const LEGACY_COMPACT_THRESHOLD = 112000;
 
 // Live progress, exposed via a Temporal QUERY so research_status can show what a RUNNING
 // job is actually doing (step, best score, tokens, most-recent validator result) instead
@@ -74,14 +81,36 @@ function buildReport(s: LoopState, reason: string): string {
   const parts = [head];
   if (!solved && s.lastObs) parts.push(`Most recent validator result:\n${s.lastObs}`);
   if (s.summary) parts.push(`What was attempted (progress record):\n${stripBestProgram(s.summary)}`);
-  else if (!solved) parts.push(`No compaction record was produced (short run). See the most recent validator result above.`);
+  else if (s.ledger && s.ledger.length) parts.push(`Experiments ledger:\n${ledgerDigest(s)}`);
+  else if (!solved) parts.push(`No experiments recorded.`);
   return parts.join("\n\n");
 }
 
+// The deterministic autoresearch "log": a compact, replay-stable digest of every program the
+// agent has tested (built by the workflow from recorded turtle_sim results, NOT an LLM summary).
+// Injected into context each turn as keep-what-works memory, and used in the report. Bounded
+// (last N attempts) so it stays cheap.
+function ledgerDigest(s: LoopState): string {
+  if (!s.ledger || s.ledger.length === 0) return "";
+  const best = Math.max(s.best.score, 0);
+  const out: string[] = [
+    `BEST SO FAR: ${best}/${s.best.total}${s.best.passed ? " — SOLVED ✅" : ""}. This program is kept as /work/prog.lua; a NEW program is only kept if it scores HIGHER, and a lower-scoring attempt is auto-reverted. Build ON the best — don't regress it.`,
+    `Programs tested: ${s.ledger.length} (most recent last):`,
+  ];
+  for (const e of s.ledger.slice(-15)) {
+    const reg = e.score < best ? " (regressed → reverted)" : "";
+    const fails = e.failing && e.failing.length ? "  still-FAIL: " + Array.from(new Set(e.failing)).slice(0, 8).join(" | ") : "";
+    out.push(`  #${e.n}: ${e.score}/${e.total}${reg}${fails}`);
+  }
+  out.push(`Test EVERY new idea with turtle_sim — that is the only way to make progress. Do NOT resubmit an approach already listed above; for each still-failing invariant, try a DIFFERENT root-cause hypothesis.`);
+  return out.join("\n");
+}
+
 // cheap, deterministic gate (workflow-side, no transcript serialization); the actual eviction +
-// summarization is the compact ACTIVITY, invoked only when this trips.
-function needsCompaction(s: LoopState): boolean {
-  return estTokens(sendView(s.messages, s.summary), TOOLS_SCHEMA_TOK) >= COMPACT_THRESHOLD;
+// summarization is the compact ACTIVITY, invoked only when this trips. `threshold` is passed in
+// so pre-autoresearch histories can keep the legacy value (replay-stable command sequence).
+function needsCompaction(s: LoopState, threshold: number): boolean {
+  return estTokens(sendView(s.messages, s.summary), TOOLS_SCHEMA_TOK) >= threshold;
 }
 
 export async function researchWorkflow(input: ResearchInput, state?: LoopState): Promise<ResearchResult> {
@@ -94,9 +123,16 @@ export async function researchWorkflow(input: ResearchInput, state?: LoopState):
       { role: "system", content: input.systemPrompt },
       { role: "user", content: `${input.task}\n\nBegin. Write the program and call turtle_sim to test it; read the failing invariants and iterate until it reports 0 failed.` },
     ],
-    step: 0, best: { program: "", score: -1, total: 0, passed: false }, attempts: 0, opened: false, summary: "", tokens: 0, lastObs: "", stall: 0,
+    step: 0, best: { program: "", score: -1, total: 0, passed: false }, attempts: 0, opened: false, summary: "", tokens: 0, lastObs: "", stall: 0, ledger: [],
   };
   const maxTokens = input.maxTokens ?? 20_000_000; // default 20M token budget (0 would = unbounded)
+
+  // Deterministic autoresearch orchestration (log-result + keep-or-revert + full-window
+  // compaction), gated behind ONE patch marker so in-flight pre-deploy histories replay with the
+  // legacy behavior. AUTORESEARCH is false only when replaying such an old history.
+  const AUTORESEARCH = patched("autoresearch-v1");
+  if (AUTORESEARCH && !s.ledger) s.ledger = []; // resumed pre-autoresearch state carries no ledger
+  const compactAt = AUTORESEARCH ? COMPACT_THRESHOLD : LEGACY_COMPACT_THRESHOLD;
 
   // register the progress query up front so research_status can read live state immediately
   setHandler(progressQuery, (): Progress => ({
@@ -138,7 +174,7 @@ export async function researchWorkflow(input: ResearchInput, state?: LoopState):
     if (maxTokens && s.tokens >= maxTokens) break; // token budget exhausted -> return best-so-far
 
     // bind to glm-5.2's window: cheap gate here, the eviction + summarization is the compact activity
-    if (needsCompaction(s)) {
+    if (needsCompaction(s, compactAt)) {
       const r = await compact({ messages: s.messages, summary: s.summary, task: String(s.messages[1].content), toolsSchemaTok: TOOLS_SCHEMA_TOK });
       s.messages = r.messages; s.summary = r.summary; s.tokens += r.tokens;
     }
@@ -147,7 +183,7 @@ export async function researchWorkflow(input: ResearchInput, state?: LoopState):
     // "fetch failed" to Ollama) — a real infra failure, NOT a "did not pass" result. Let it
     // propagate so the workflow reports FAILED, instead of masking it as an empty best attempt.
     // (Budget/step exhaustion is the legitimate graceful path — see the while-condition + done().)
-    const a: acts.LlmOut = await callLlm({ messages: sendView(s.messages, s.summary), tools: TOOLS, model, step: s.step });
+    const a: acts.LlmOut = await callLlm({ messages: sendView(s.messages, s.summary, AUTORESEARCH ? ledgerDigest(s) : undefined), tools: TOOLS, model, step: s.step });
     s.tokens += a.tokens;
 
     s.messages.push(a.toolCalls.length
@@ -167,7 +203,18 @@ export async function researchWorkflow(input: ResearchInput, state?: LoopState):
           const r = await turtleSim({ workSession, program, envs: input.envs });
           obs = r.observation;
           s.lastObs = r.observation; // most recent sim/validator feedback -> caller-facing report
-          if (r.score > s.best.score) s.best = { program, score: r.score, total: r.total, passed: r.passed };
+          const improved = r.score > s.best.score;
+          if (improved) s.best = { program, score: r.score, total: r.total, passed: r.passed };
+          if (AUTORESEARCH) {
+            // log-result: deterministic autoresearch ledger (workflow-owned, from the recorded result)
+            s.ledger.push({ n: s.attempts, score: r.score, total: r.total, failing: r.failures });
+            // keep-or-revert: a non-improving attempt is discarded — restore the canonical best
+            // program to /work/prog.lua so the sandbox + deliverable never regress below best.
+            if (!improved && s.best.program) {
+              await writeProg({ workSession, program: s.best.program });
+              obs += `\n[harness] this scored ${r.score}/${r.total}, not beating your best ${s.best.score}/${s.best.total} — /work/prog.lua has been reverted to your best. Build on THAT, not this attempt.`;
+            }
+          }
         } else if (tc.name === "run_js") {
           obs = (await runJs({ workSession, code: String(args.code ?? "") })).text || "(no output)";
         } else {

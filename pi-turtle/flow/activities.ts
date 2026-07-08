@@ -304,6 +304,15 @@ export async function checkEngine(input: { workSession: string }): Promise<{ ok:
   return { ok, detail: ok ? "craftos engine loaded" : `engine probe failed: ${text.slice(0, 400)}` };
 }
 
+// writeProg: deterministic keep-or-revert. Overwrite /work/prog.lua with a program — the
+// workflow uses this to restore the best-so-far after a regressing turtle_sim, so the
+// canonical program (and the final deliverable) never drops below the best score.
+export async function writeProg(input: { workSession: string; program: string }): Promise<{ ok: true }> {
+  const c = await conn(input.workSession);
+  await lang.runJs(c, `await fs.writeFile(${JSON.stringify(WORK_PROG)}, ${JSON.stringify(input.program)}); console.log('reverted ' + ${JSON.stringify(input.program.length)} + ' bytes');`);
+  return { ok: true };
+}
+
 // turtle_sim: the state MUTATION — write the program to /work/prog.lua (single source
 // of truth), then run it against every env. Returns the sim result as the agent's
 // self-test observation.

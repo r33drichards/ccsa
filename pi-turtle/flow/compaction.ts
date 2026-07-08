@@ -4,11 +4,14 @@
 //
 // Algorithm: threshold-triggered rolling summary + tool-pair-safe verbatim tail. Bind to
 // glm-5.2's window (Ollama glm-5.2:cloud = 976K) but run under a working cap for latency.
-export const MODEL_WINDOW = 976000;                              // re-read if the glm tag changes
-export const WORKING_CAP = Math.min(160000, MODEL_WINDOW);       // practical latency/cost budget
-export const COMPACT_THRESHOLD = Math.floor(0.70 * WORKING_CAP); // 112000 — compact at/above this
-export const COMPACT_TARGET = Math.floor(0.50 * WORKING_CAP);    // 80000 — fold/evict down to this
-export const TAIL_TOKEN_BUDGET = 40000;                          // recent est-tokens kept verbatim
+export const MODEL_WINDOW = 976000;                              // glm-5.2:cloud on Ollama; re-read if the tag changes
+// Use most of the real 976K window (it was previously capped at 160K, which forced needless
+// compaction at ~112K). WORKING_CAP reserves ~76K headroom for the completion output + the tool
+// schema + the experiments ledger, all of which also sit inside the 976K context.
+export const WORKING_CAP = 900000;
+export const COMPACT_THRESHOLD = Math.floor(0.78 * WORKING_CAP); // ~702000 — compact at/above this
+export const COMPACT_TARGET = Math.floor(0.50 * WORKING_CAP);    // 450000  — fold/evict down to this
+export const TAIL_TOKEN_BUDGET = 300000;                         // recent est-tokens kept verbatim
 export const MIN_TAIL_GROUPS = 3;                                // ...but always keep >= this many groups
 
 export function toolsSchemaTok(tools: unknown): number { return Math.ceil(JSON.stringify(tools).length / 4); }
@@ -25,9 +28,12 @@ export function estTokens(view: any[], schemaTok: number): number {
   for (const m of view) t += estMsg(m);
   return t;
 }
-// what we actually send: pinned system + first user, then the rolling summary block, then live turns
-export function sendView(messages: any[], summary: string): any[] {
+// what we actually send: pinned system + first user, then the deterministic experiments
+// ledger (keep-what-works memory, always present), then the rolling summary block (compaction
+// byproduct, only once context grows large), then the live turns.
+export function sendView(messages: any[], summary: string, ledger?: string): any[] {
   const head: any[] = [messages[0], messages[1]];
+  if (ledger) head.push({ role: "system", content: "EXPERIMENTS LEDGER (a deterministic record of every program you have tested — your keep-what-works memory; do NOT repeat a rejected approach):\n" + ledger });
   if (summary) head.push({ role: "system", content: "CONVERSATION SUMMARY (compacted history; authoritative record of everything before the recent turns):\n" + summary });
   return head.concat(messages.slice(2));
 }
