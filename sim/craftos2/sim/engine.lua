@@ -23,6 +23,35 @@
 
 local STACK = 64
 
+-- Real Minecraft per-item max stack sizes. The sim used to treat EVERY item as stacking to
+-- 64; a real turtle/chest respects per-item maxCount (ender pearls 16, tools 1, most items
+-- 64). Per-item consolidation tests (e.g. ceil(total / maxStack(item))) depend on this, and
+-- it's simply faithful — a turtle genuinely can't put two swords in one slot. Anything not
+-- matched here stacks to STACK (64).
+local STACK16 = {
+  ["minecraft:ender_pearl"] = true, ["minecraft:snowball"] = true, ["minecraft:egg"] = true,
+  ["minecraft:sign"] = true, ["minecraft:bucket"] = true, ["minecraft:honey_bottle"] = true,
+  ["minecraft:armor_stand"] = true, ["minecraft:written_book"] = true, ["minecraft:banner"] = true,
+}
+-- max-1 (never stacks): tools, weapons, armor, and other singletons. Pattern-matched so we
+-- don't enumerate every material variant (wooden_/stone_/iron_/golden_/diamond_/netherite_).
+local function nonstacking(name)
+  return name:find("_pickaxe") or name:find("_axe") or name:find("_shovel")
+      or name:find("_hoe") or name:find("_sword") or name:find("_helmet")
+      or name:find("_chestplate") or name:find("_leggings") or name:find("_boots")
+      or name:find("bow$") or name:find("crossbow") or name:find("shield")
+      or name:find("elytra") or name:find("trident") or name:find("fishing_rod")
+      or name:find("flint_and_steel") or name:find("shears") or name:find("_bucket")
+      or name:find("saddle") or name:find("_boat") or name:find("minecart")
+      or name:find("_bed$") or name:find("totem") or name:find("potion")
+end
+local function maxStack(name)
+  if not name then return STACK end
+  if STACK16[name] then return 16 end
+  if nonstacking(name) then return 1 end
+  return STACK
+end
+
 -- Fuel values (ticks of movement) for common items.
 local FUEL = {
   ["minecraft:coal"] = 80, ["minecraft:charcoal"] = 80,
@@ -150,7 +179,7 @@ function M.install(world)
   -- Inventory helpers -------------------------------------------------------
   local function firstFreeOrStack(name)
     for i = 1, 16 do
-      if inv[i] and inv[i].name == name and inv[i].count < STACK then return i end
+      if inv[i] and inv[i].name == name and inv[i].count < maxStack(name) then return i end
     end
     for i = 1, 16 do
       if not inv[i] then return i end
@@ -164,7 +193,7 @@ function M.install(world)
       local slot = firstFreeOrStack(name)
       if not slot then return count end -- no room; remaining lost
       if not inv[slot] then inv[slot] = { name = name, count = 0 } end
-      local space = STACK - inv[slot].count
+      local space = maxStack(name) - inv[slot].count
       local put = math.min(space, count)
       inv[slot].count = inv[slot].count + put
       count = count - put
@@ -181,10 +210,10 @@ function M.install(world)
       local i = (start - 1 + j) % 16 + 1
       local s = inv[i]
       if s == nil then
-        inv[i] = { name = name, count = math.min(remaining, STACK) }
+        inv[i] = { name = name, count = math.min(remaining, maxStack(name)) }
         remaining = remaining - inv[i].count
-      elseif s.name == name and s.count < STACK then
-        local put = math.min(STACK - s.count, remaining)
+      elseif s.name == name and s.count < maxStack(name) then
+        local put = math.min(maxStack(name) - s.count, remaining)
         s.count = s.count + put
         remaining = remaining - put
       end
@@ -292,12 +321,12 @@ function M.install(world)
   function turtle.getItemSpace(n)
     n = n or selected
     if not inv[n] then return STACK end
-    return STACK - inv[n].count
+    return maxStack(inv[n].name) - inv[n].count
   end
   function turtle.getItemDetail(n)
     n = n or selected
     if not inv[n] then return nil end
-    return { name = inv[n].name, count = inv[n].count, damage = 0 }
+    return { name = inv[n].name, count = inv[n].count, damage = 0, maxCount = maxStack(inv[n].name) }
   end
   function turtle.transferTo(n, count)
     if not inv[selected] then return false end
@@ -306,7 +335,7 @@ function M.install(world)
     while moved < count and inv[selected] do
       if inv[n] and inv[n].name ~= inv[selected].name then break end
       if not inv[n] then inv[n] = { name = inv[selected].name, count = 0 } end
-      if inv[n].count >= STACK then break end
+      if inv[n].count >= maxStack(inv[n].name) then break end
       inv[n].count = inv[n].count + 1
       inv[selected].count = inv[selected].count - 1
       moved = moved + 1
@@ -351,10 +380,10 @@ function M.install(world)
     for i = 1, cap do
       local s = c[i]
       if s == nil then
-        c[i] = { name = it.name, count = math.min(remaining, STACK) }
+        c[i] = { name = it.name, count = math.min(remaining, maxStack(it.name)) }
         remaining = remaining - c[i].count
-      elseif s.name == it.name and s.count < STACK then
-        local put = math.min(STACK - s.count, remaining)
+      elseif s.name == it.name and s.count < maxStack(it.name) then
+        local put = math.min(maxStack(it.name) - s.count, remaining)
         s.count = s.count + put
         remaining = remaining - put
       end
@@ -505,7 +534,7 @@ function M.install(world)
     -- result lands in the selected slot first, then spills to any free/stackable slot
     if not inv[selected] or inv[selected].name == out.name then
       if not inv[selected] then inv[selected] = { name = out.name, count = 0 } end
-      local put = math.min(STACK - inv[selected].count, produced)
+      local put = math.min(maxStack(out.name) - inv[selected].count, produced)
       inv[selected].count = inv[selected].count + put
       produced = produced - put
     end
