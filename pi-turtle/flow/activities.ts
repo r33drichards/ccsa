@@ -7,7 +7,7 @@
 //   runJs        - raw run_js passthrough, so the agent can inspect the sandbox itself
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { ApplicationFailure, Context } from "@temporalio/activity";
+import { ApplicationFailure, Context, heartbeat } from "@temporalio/activity";
 import * as lang from "./mcp-languages.ts";
 import { validatorFromWorkCode, parseSim, skillSeedFiles, WORK_PROG, type SimResult } from "./sim.ts";
 import * as comp from "./compaction.ts";
@@ -89,7 +89,7 @@ export async function callLlm(input: { messages: unknown[]; tools: unknown[]; mo
   //   * OVERALL_MS — hard backstop just under the 15-min activity ceiling.
   // Every abort surfaces as a retryable networkError, so Temporal cycles its retries ~14x faster
   // during an outage instead of burning 14 min per attempt.
-  const HEADER_MS = 60_000, IDLE_MS = 120_000, OVERALL_MS = 840_000;
+  const HEADER_MS = 60_000, IDLE_MS = 300_000, OVERALL_MS = 3_300_000; // idle 5min = the heartbeatTimeout; overall 55min < 60min cap
   const ac = new AbortController();
   const overall = setTimeout(() => ac.abort(new DOMException(`no completion within ${OVERALL_MS / 1000}s`, "TimeoutError")), OVERALL_MS);
   let phase = setTimeout(() => ac.abort(new DOMException(`no response headers within ${HEADER_MS / 1000}s — Ollama unavailable`, "TimeoutError")), HEADER_MS);
@@ -133,7 +133,8 @@ export async function callLlm(input: { messages: unknown[]; tools: unknown[]; mo
     for (;;) {
       const { value, done } = await reader.read();
       if (done) break;
-      bumpIdle(); // progress — reset the stall deadline
+      bumpIdle();           // progress — reset the client stall deadline
+      try { heartbeat(); } catch { /* not in an activity context (e.g. a local test) */ }
       buf += dec.decode(value, { stream: true });
       let nl: number;
       while ((nl = buf.indexOf("\n")) >= 0) {
