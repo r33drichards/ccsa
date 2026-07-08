@@ -72,6 +72,7 @@ const COMPACT_EVERY = 30; // continue-as-new cadence, to bound Temporal event-hi
 // means a fresh sandbox would silently drop the agent's prior artifacts, so surface a
 // clean, legible failure and let the caller re-trigger rather than continue on a
 // half-restored environment.
+const EXPLORE_BUDGET = 5; // steps of exploration allowed before we force a first turtle_sim attempt
 const STALL_PROBE = 6; // consecutive engine-down-looking tool results before we confirm+abort
 const ENGINE_DOWN_RE =
   /SIM ENGINE UNAVAILABLE|\[execution failed\]|(?:craftos|picat)\s+is\s+not\s+defined|\/work[^\n]*ENOENT|ENOENT:\s*work/;
@@ -188,6 +189,16 @@ export async function researchWorkflow(input: ResearchInput, state?: LoopState):
     if (needsCompaction(s, compactAt)) {
       const r = await compact({ messages: s.messages, summary: s.summary, task: String(s.messages[1].content), toolsSchemaTok: TOOLS_SCHEMA_TOK });
       s.messages = r.messages; s.summary = r.summary; s.tokens += r.tokens;
+    }
+
+    // Measure discipline: agents reason-loop on hard tasks (200K+ tokens, 0 attempts), trying to
+    // solve everything analytically. If the agent has explored for EXPLORE_BUDGET steps without EVER
+    // calling turtle_sim, push it hard to submit a best-effort program NOW — empirical feedback (the
+    // score + failing invariants) beats unbounded planning. Message-only (no activity) so it's
+    // replay-safe. The autoresearch ledger's "test every idea" nudge only fires AFTER attempt #1;
+    // this covers the gap before the first attempt.
+    if (s.attempts === 0 && s.step >= EXPLORE_BUDGET) {
+      s.messages.push({ role: "user", content: `⚠ You have taken ${s.step} steps and have NOT ONCE called turtle_sim. You cannot solve this by analysis alone. Stop planning and SUBMIT a best-effort COMPLETE Lua program to turtle_sim THIS TURN — the deterministic sim's score and failing-invariant list will teach you far more than more reasoning, and a partial score beats no attempt. Write the program now.` });
     }
 
     // callLlm failing after its retries means the LLM is unreachable (e.g. a network
