@@ -169,7 +169,18 @@ function buildServer(): McpServer {
     const h = client.workflow.getHandle(workflowId);
     const desc = await h.describe();
     let out: Record<string, unknown>;
-    if (desc.status.name === "RUNNING") out = { type: "running", workflowId, ui };
+    if (desc.status.name === "RUNNING") {
+      // pull live progress via the workflow's `progress` query (best-effort — an older
+      // in-flight run without the handler, or a worker mid-replay, just falls back to bare running)
+      let p: any = null;
+      try { p = await h.query("progress"); } catch { /* no handler / not ready */ }
+      out = p
+        ? { type: "running", workflowId, phase: p.phase, step: `${p.step}/${p.maxSteps}`,
+            simAttempts: p.attempts, best: `${p.score}/${p.total}${p.passed ? " ✅" : ""}`, tokens: p.tokens,
+            ...(p.stall ? { engineWarning: `${p.stall} consecutive engine-fault tool results — will fail closed if the sandbox is confirmed down` } : {}),
+            ...(p.lastObs ? { lastResult: p.lastObs } : {}), ui }
+        : { type: "running", workflowId, ui };
+    }
     else if (desc.status.name === "COMPLETED") {
       const r: any = await h.result();
       out = r.passed

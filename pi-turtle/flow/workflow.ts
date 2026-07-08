@@ -4,7 +4,7 @@
 //   turtle_sim -> turtleSim (run the program against the arena, the state mutation)
 //   run_js     -> runJs     (raw sandbox inspection)
 // Terminates when turtle_sim passes, the model stops calling tools, or max steps.
-import { proxyActivities, workflowInfo, continueAsNew, ApplicationFailure, patched } from "@temporalio/workflow";
+import { proxyActivities, workflowInfo, continueAsNew, ApplicationFailure, patched, setHandler, defineQuery } from "@temporalio/workflow";
 import type * as acts from "./activities.ts";
 import { TOOLS } from "./tools.ts";
 import { estTokens, sendView, COMPACT_THRESHOLD, toolsSchemaTok } from "./compaction.ts";
@@ -32,6 +32,14 @@ export type ResearchInput = { task: string; envs: Env[]; systemPrompt: string; m
 export type ResearchResult = { passed: boolean; score: number; total: number; program: string; attempts: number; steps: number; tokens: number; report: string };
 type Best = { program: string; score: number; total: number; passed: boolean };
 type LoopState = { messages: any[]; step: number; best: Best; attempts: number; opened: boolean; summary: string; tokens: number; lastObs: string; stall: number };
+
+// Live progress, exposed via a Temporal QUERY so research_status can show what a RUNNING
+// job is actually doing (step, best score, tokens, most-recent validator result) instead
+// of an opaque "running". A query is side-effect-free (adds no history commands), so this
+// is fully backward-compatible — it even works for jobs already in flight, since the query
+// runs against the current worker code.
+export type Progress = { step: number; maxSteps: number; attempts: number; score: number; total: number; passed: boolean; tokens: number; stall: number; lastObs: string; phase: string };
+export const progressQuery = defineQuery<Progress>("progress");
 
 const COMPACT_EVERY = 30; // continue-as-new cadence, to bound Temporal event-history size
 
@@ -89,6 +97,14 @@ export async function researchWorkflow(input: ResearchInput, state?: LoopState):
     step: 0, best: { program: "", score: -1, total: 0, passed: false }, attempts: 0, opened: false, summary: "", tokens: 0, lastObs: "", stall: 0,
   };
   const maxTokens = input.maxTokens ?? 0; // 0 = unbounded
+
+  // register the progress query up front so research_status can read live state immediately
+  setHandler(progressQuery, (): Progress => ({
+    step: s.step, maxSteps, attempts: s.attempts,
+    score: Math.max(s.best.score, 0), total: s.best.total, passed: s.best.passed,
+    tokens: s.tokens, stall: s.stall, lastObs: (s.lastObs || "").slice(0, 500),
+    phase: !s.opened ? "starting" : s.best.passed ? "solved" : "iterating",
+  }));
 
   if (!s.opened) {
     await openSandbox(workSession);
