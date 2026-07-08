@@ -14,11 +14,16 @@
 #   console.log(JSON.stringify(await craftos({nodes:[{label:'c1',collect:true,
 #     program:"emit('hi') emit(2+3) done()"}]})));
 #
-# Filesystem policy: FULLY ISOLATED — run_js fs ops are confined to the virtual
-# /work snapshot (content-addressed; NO --fs-passthrough, so the sandbox cannot
-# read or write the real host disk). The harness threads the CA snapshot across
-# calls so /work persists like a normal dir. The wasm engines load from real
-# paths via --wasm-module (the server process at startup, not run_js fs).
+# Filesystem policy: FULLY ISOLATED — run_js fs ops operate on the virtual,
+# content-addressed sandbox filesystem (NO --fs-passthrough, so the sandbox
+# cannot read or write the real host disk). Because there is no host passthrough,
+# every path the policy sees is already confined to the isolated store, so the
+# rego only needs to refuse ".." traversal — it allows any other path whether it
+# is written absolute (/work/...), relative (work/..., bootstrap.js, .), or points
+# at some other in-sandbox exploration path. The harness seeds /work/bootstrap.js
+# + skills and threads the CA snapshot across calls so /work persists like a
+# normal dir. The wasm engines load from real paths via --wasm-module (the server
+# process at startup, not run_js fs).
 #
 # Env / flags:
 #   --port N        HTTP port (default 8080; env MCP_V8_PORT)
@@ -66,25 +71,31 @@ else
   MCP=( "$HERE/bin/mcp-v8" )
 fi
 
-# Per-run policy dir. The filesystem rego confines run_js to the virtual /work
-# snapshot (no --fs-passthrough); the fetch rego denies network.
+# Per-run policy dir. The filesystem rego allows any non-".." path within the
+# isolated virtual fs (no --fs-passthrough, so nothing can escape it); the fetch
+# rego denies network.
 RUN_DIR="$WORK_DIR/.policies"
 mkdir -p "$RUN_DIR"
 
 cat > "$RUN_DIR/filesystem.rego" <<'EOF'
 package mcp.filesystem
 
-# Fully isolated: run_js fs ops are confined to the virtual /work mount (the
-# content-addressed sandbox filesystem — NO --fs-passthrough, so nothing touches
-# the real host disk). The harness seeds /work/bootstrap.js and threads the CA
-# snapshot across calls so /work persists like a normal dir. The engines
-# themselves load from real paths via --wasm-module, which is the server process
-# reading them at startup, not subject to this run_js fs policy. Prefix rule
-# refuses ".." traversal (paths reach the policy unnormalized).
+# Fully isolated: run_js fs ops act on the virtual, content-addressed sandbox
+# filesystem — NO --fs-passthrough, so no path can reach the real host disk. That
+# is the whole safety argument: since there is no passthrough, broadening this
+# policy cannot expose the host; every path is already trapped inside the isolated
+# store. So we allow ANY path — absolute (/work/...), relative (work/...,
+# bootstrap.js, .), or any other in-sandbox exploration path — and only refuse
+# ".." traversal (paths reach the policy unnormalized, so a substring check is the
+# right guard). This lets the agent's legitimate exploration succeed regardless of
+# how it happens to spell a path, instead of failing everything that is not
+# spelled "/work…". The harness seeds /work/bootstrap.js + skills and threads the
+# CA snapshot across calls so /work persists like a normal dir; the wasm engines
+# load from real paths via --wasm-module (the server process at startup, not
+# subject to this run_js fs policy).
 default allow = false
 
 allow if {
-    startswith(input.path, "/work")
     not contains(input.path, "..")
 }
 EOF
