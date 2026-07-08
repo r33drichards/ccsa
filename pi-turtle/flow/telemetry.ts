@@ -19,7 +19,19 @@ export function initTelemetry(serviceName?: string): void {
   if (!base) return;
   started = true;
   const b = base.replace(/\/+$/, "");
-  const resource = resourceFromAttributes({ "service.name": serviceName || process.env.OTEL_SERVICE_NAME || "turtle-research" });
+  // Every process in this stack shares ONE service identity — "turtle-research" — so a single
+  // selector covers the worker AND the MCP server: {service_name="turtle-research"} in Loki,
+  // service_name="turtle-research" in Prometheus/Tempo. The per-process role (worker vs mcp)
+  // is kept as a `service.component` attribute so it stays filterable without fragmenting
+  // service_name. Previously each caller set service.name to "turtle-research-worker" /
+  // "turtle-research-mcp", so {service_name="turtle-research"} matched 0 streams in Loki even
+  // though logs were flowing — they were just under those two other service_name values.
+  const component = (serviceName || "app").replace(/^turtle-research-/, "");
+  const resource = resourceFromAttributes({
+    "service.name": process.env.OTEL_SERVICE_NAME || "turtle-research",
+    "service.namespace": "turtle-research",
+    "service.component": component,
+  });
 
   metrics.setGlobalMeterProvider(new MeterProvider({
     resource,
@@ -33,7 +45,7 @@ export function initTelemetry(serviceName?: string): void {
     resource,
     processors: [new BatchLogRecordProcessor({ exporter: new OTLPLogExporter({ url: b + "/v1/logs" }) })],
   }));
-  console.error(`[otel] metrics+traces+logs -> ${b}`);
+  console.error(`[otel] ${component}: metrics+traces+logs -> ${b} (service.name=${process.env.OTEL_SERVICE_NAME || "turtle-research"})`);
 }
 
 // ── metrics ──────────────────────────────────────────────────────────────────

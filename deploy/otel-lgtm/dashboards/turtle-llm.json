@@ -4,9 +4,12 @@
   "tags": ["turtle-research", "llm"],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "30s",
   "time": { "from": "now-6h", "to": "now" },
+  "templating": { "list": [
+    { "type": "textbox", "name": "workflow_id", "label": "workflow_id", "description": "Filter run logs by workflow (structured metadata). Leave blank to show all.", "query": "", "current": { "text": "", "value": "" } }
+  ] },
   "panels": [
     {
       "type": "stat", "title": "Total tokens", "gridPos": { "h": 6, "w": 8, "x": 0, "y": 0 },
@@ -52,6 +55,12 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum by (model) (llm_tokens_total)", "legendFormat": "{{model}}" } ],
       "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] }
+    },
+    {
+      "type": "logs", "title": "Run logs (LLM stream + tool calls) — set $workflow_id", "gridPos": { "h": 14, "w": 24, "x": 0, "y": 22 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [ { "refId": "A", "datasource": { "type": "loki", "uid": "loki" }, "expr": "{service_name=~\"turtle-research.*\"} | workflow_id=~\"${workflow_id:regex}\"" } ],
+      "options": { "showTime": true, "wrapLogMessage": true, "prettifyLogMessage": false, "dedupStrategy": "none", "enableLogDetails": true, "sortOrder": "Ascending" }
     }
   ]
 }
