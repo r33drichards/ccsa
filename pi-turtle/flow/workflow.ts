@@ -86,7 +86,7 @@ function needsCompaction(s: LoopState): boolean {
 
 export async function researchWorkflow(input: ResearchInput, state?: LoopState): Promise<ResearchResult> {
   const model = input.model || "glm-5.2";
-  const maxSteps = input.maxSteps ?? 120;
+  const maxSteps = input.maxSteps ?? 500;
   const workSession = workflowInfo().workflowId; // stable across continue-as-new -> same /work
 
   let s: LoopState = state ?? {
@@ -96,7 +96,7 @@ export async function researchWorkflow(input: ResearchInput, state?: LoopState):
     ],
     step: 0, best: { program: "", score: -1, total: 0, passed: false }, attempts: 0, opened: false, summary: "", tokens: 0, lastObs: "", stall: 0,
   };
-  const maxTokens = input.maxTokens ?? 0; // 0 = unbounded
+  const maxTokens = input.maxTokens ?? 20_000_000; // default 20M token budget (0 would = unbounded)
 
   // register the progress query up front so research_status can read live state immediately
   setHandler(progressQuery, (): Progress => ({

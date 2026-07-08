@@ -142,8 +142,8 @@ function buildServer(): McpServer {
       task: z.string().describe("One plain-English line: what the turtle must do (guides the sub-agent)."),
       environments: z.array(zEnv).min(1).describe("One or more sim worlds the turtle must ALL pass. Each: { start?, chests?, recipes?, test }. `test` is a short Lua snippet asserting invariants (this is the ONLY Lua you write; you do NOT write the turtle program). Use several varied environments for a robust result."),
       timeoutMs: z.number().int().optional().describe("Per-environment sim timeout ms (default 60000)."),
-      maxSteps: z.number().int().positive().optional().describe("Max agent turns (LLM calls) before giving up and returning the best attempt (default 60)."),
-      maxTokens: z.number().int().positive().optional().describe("Total LLM token budget for the whole job (sum over every model call incl. compaction summaries). When exceeded, the loop stops and returns the best attempt. Default: unbounded."),
+      maxSteps: z.number().int().positive().optional().describe("Max agent turns (LLM calls) before giving up and returning the best attempt (default 500)."),
+      maxTokens: z.number().int().positive().optional().describe("Total LLM token budget for the whole job (sum over every model call incl. compaction summaries). When exceeded, the loop stops and returns the best attempt. Default: 20,000,000 (20M)."),
     },
   }, async ({ task, environments, timeoutMs, maxSteps, maxTokens }: { task: string; environments: Env[]; timeoutMs?: number; maxSteps?: number; maxTokens?: number }) => {
     const arena = arenaYaml(task, environments, timeoutMs ?? 60000);
