@@ -16,10 +16,12 @@ const { openSandbox, turtleSim, checkCompleted, runJs, checkEngine, writeProg } 
 });
 // callLlm + compact hit Ollama, which fails intermittently ("fetch failed"). Temporal
 // retries the ACTIVITY in place (the workflow keeps its state and resumes — it does NOT
-// restart), so we retry generously to ride out a provider blip: up to 30 attempts,
-// backing off to one per minute (~30 min of coverage). A network/5xx/429 error is
-// retried; a 4xx client error (bad key/request) is thrown non-retryable and fails fast.
-const RETRY = { maximumAttempts: 30, initialInterval: "2 seconds", backoffCoefficient: 2, maximumInterval: "60 seconds" } as const;
+// restart). With the 60s header timeout surfacing "unavailable" fast and the 5-min
+// heartbeat catching stalls, we don't need many retries to mask a long outage — 5 attempts
+// (~1 min of backoff) rides out a brief blip, then a sustained failure surfaces legibly so
+// the caller re-triggers. A network/5xx/429 error is retried; a 4xx client error (bad
+// key/request) is thrown non-retryable and fails fast.
+const RETRY = { maximumAttempts: 5, initialInterval: "2 seconds", backoffCoefficient: 2, maximumInterval: "60 seconds" } as const;
 // callLlm STREAMS a reasoning model (glm-5.2): a single completion can think for many minutes.
 // It HEARTBEATS on every streamed chunk, so liveness is governed by heartbeatTimeout — a NORMAL
 // 5-min window that catches REAL errors (a stalled/hung stream → fail fast → retry). startToClose
