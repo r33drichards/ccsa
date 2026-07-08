@@ -79,17 +79,34 @@ export async function callLlm(input: { messages: unknown[]; tools: unknown[]; mo
   const url = `${OLLAMA_BASE}/chat/completions`;
   const step = input.step ?? 0;
   const attrs = { workflow_id: wfId(), kind: "llm", step };
+  // Fail FAST when Ollama is unavailable, without cutting off a genuinely long (but steadily
+  // streaming) completion. Three phases on one AbortController, so we distinguish "service not
+  // responding" from "slow response":
+  //   * HEADER_MS  — no response headers by then ⇒ the service isn't responding (down / overloaded
+  //                  / hanging TCP) ⇒ abort in ~60s instead of blocking the full 14 min.
+  //   * IDLE_MS    — the stream stalled (no chunk) ⇒ mid-generation hang; still allows slow-but-
+  //                  progressing output because the timer resets on every chunk.
+  //   * OVERALL_MS — hard backstop just under the 15-min activity ceiling.
+  // Every abort surfaces as a retryable networkError, so Temporal cycles its retries ~14x faster
+  // during an outage instead of burning 14 min per attempt.
+  const HEADER_MS = 60_000, IDLE_MS = 120_000, OVERALL_MS = 840_000;
+  const ac = new AbortController();
+  const overall = setTimeout(() => ac.abort(new DOMException(`no completion within ${OVERALL_MS / 1000}s`, "TimeoutError")), OVERALL_MS);
+  let phase = setTimeout(() => ac.abort(new DOMException(`no response headers within ${HEADER_MS / 1000}s — Ollama unavailable`, "TimeoutError")), HEADER_MS);
+  const clearAll = () => { clearTimeout(overall); clearTimeout(phase); };
+  const bumpIdle = () => { clearTimeout(phase); phase = setTimeout(() => ac.abort(new DOMException(`stream stalled — no data for ${IDLE_MS / 1000}s (Ollama unavailable)`, "TimeoutError")), IDLE_MS); };
   let r: Response;
   try {
     r = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
       body: JSON.stringify({ model, messages: input.messages, tools: input.tools, tool_choice: "auto", temperature: 0, stream: true, stream_options: { include_usage: true } }),
-      signal: AbortSignal.timeout(840000), // 14 min, just under the 15-min activity ceiling
+      signal: ac.signal,
     });
-  } catch (e) { recordCall("completion", model, "error"); throw networkError("callLlm", url, e); }
-  if (!r.ok) { recordCall("completion", model, "error"); throw httpError("callLlm", url, r.status, await r.text()); }
-  if (!r.body) { recordCall("completion", model, "error"); throw new Error("callLlm: streaming response had no body"); }
+  } catch (e) { clearAll(); recordCall("completion", model, "error"); throw networkError("callLlm", url, e); }
+  bumpIdle(); // headers arrived — switch from the header deadline to the per-chunk idle deadline
+  if (!r.ok) { clearAll(); recordCall("completion", model, "error"); throw httpError("callLlm", url, r.status, await r.text()); }
+  if (!r.body) { clearAll(); recordCall("completion", model, "error"); throw new Error("callLlm: streaming response had no body"); }
 
   // parse the OpenAI SSE stream: accumulate assistant content + reassemble tool_call
   // fragments (which arrive split across deltas, keyed by index), teeing text to Loki.
@@ -108,6 +125,7 @@ export async function callLlm(input: { messages: unknown[]; tools: unknown[]; mo
     for (;;) {
       const { value, done } = await reader.read();
       if (done) break;
+      bumpIdle(); // progress — reset the stall deadline
       buf += dec.decode(value, { stream: true });
       let nl: number;
       while ((nl = buf.indexOf("\n")) >= 0) {
@@ -130,7 +148,8 @@ export async function callLlm(input: { messages: unknown[]; tools: unknown[]; mo
         flush();
       }
     }
-  } catch (e) { recordCall("completion", model, "error"); throw networkError("callLlm", url, e); }
+  } catch (e) { clearAll(); recordCall("completion", model, "error"); throw networkError("callLlm", url, e); }
+  clearAll();
   flush(true);
 
   recordTokens("completion", model, usage);
