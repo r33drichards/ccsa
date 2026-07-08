@@ -4,7 +4,7 @@
 //   turtle_sim -> turtleSim (run the program against the arena, the state mutation)
 //   run_js     -> runJs     (raw sandbox inspection)
 // Terminates when turtle_sim passes, the model stops calling tools, or max steps.
-import { proxyActivities, workflowInfo, continueAsNew, ApplicationFailure } from "@temporalio/workflow";
+import { proxyActivities, workflowInfo, continueAsNew, ApplicationFailure, patched } from "@temporalio/workflow";
 import type * as acts from "./activities.ts";
 import { TOOLS } from "./tools.ts";
 import { estTokens, sendView, COMPACT_THRESHOLD, toolsSchemaTok } from "./compaction.ts";
@@ -95,8 +95,13 @@ export async function researchWorkflow(input: ResearchInput, state?: LoopState):
     // Preflight: fail fast (with a distinct cause) if the seeded engine can't even load,
     // instead of discovering it 1.9M tokens later. Catches the "seeding failed at start"
     // variant; the stall guardrail below catches the "collapsed mid-run" variant.
-    const eng = await checkEngine({ workSession });
-    if (!eng.ok) throw ApplicationFailure.nonRetryable(`sim engine preflight failed — sandbox is broken before any work began: ${eng.detail}`, "SimEngineUnavailable");
+    // patched(): the checkEngine calls are NEW activities — gate them so in-flight
+    // pre-deploy histories replay deterministically (patched()=false when replaying old
+    // history that never recorded the marker) instead of failing their workflow task.
+    if (patched("engine-guardrails-v1")) {
+      const eng = await checkEngine({ workSession });
+      if (!eng.ok) throw ApplicationFailure.nonRetryable(`sim engine preflight failed — sandbox is broken before any work began: ${eng.detail}`, "SimEngineUnavailable");
+    }
     s.opened = true;
   }
 
@@ -165,7 +170,7 @@ export async function researchWorkflow(input: ResearchInput, state?: LoopState):
     // if the engine really is down, abort NOW with a diagnosis rather than grinding to
     // maxSteps against a dead sandbox. (The third agent's `report` field can carry this
     // failure/details; here we fail the workflow with a distinct, legible cause.)
-    if (s.stall >= STALL_PROBE) {
+    if (patched("engine-guardrails-v1") && s.stall >= STALL_PROBE) {
       const eng = await checkEngine({ workSession });
       if (!eng.ok)
         throw ApplicationFailure.nonRetryable(
