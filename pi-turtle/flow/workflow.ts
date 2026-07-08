@@ -211,7 +211,7 @@ export async function researchWorkflow(input: ResearchInput, state?: LoopState):
         if (tc.name === "turtle_sim") {
           s.attempts++;
           const program = String(args.program ?? "");
-          const r = await turtleSim({ workSession, program, envs: input.envs });
+          const r = await turtleSim({ workSession, program, envs: input.envs, step: s.step });
           obs = r.observation;
           s.lastObs = r.observation; // most recent sim/validator feedback -> caller-facing report
           const improved = r.score > s.best.score;
@@ -227,7 +227,7 @@ export async function researchWorkflow(input: ResearchInput, state?: LoopState):
             }
           }
         } else if (tc.name === "run_js") {
-          obs = (await runJs({ workSession, code: String(args.code ?? "") })).text || "(no output)";
+          obs = (await runJs({ workSession, code: String(args.code ?? ""), step: s.step })).text || "(no output)";
         } else {
           obs = `unknown tool: ${tc.name}`;
         }

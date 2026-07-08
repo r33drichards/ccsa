@@ -342,12 +342,18 @@ export async function writeProg(input: { workSession: string; program: string })
 
 // turtle_sim: the state MUTATION — write the program to /work/prog.lua (single source
 // of truth), then run it against every env. Returns the sim result as the agent's
-// self-test observation.
-export async function turtleSim(input: { workSession: string; program: string; envs: Env[] }): Promise<SimObs> {
+// self-test observation. The submitted program (tool INPUT) and the observation (tool
+// OUTPUT) are tee'd to Loki, tagged by workflow_id + step, so a run's tool activity is
+// fully visible alongside its reasoning.
+export async function turtleSim(input: { workSession: string; program: string; envs: Env[]; step?: number }): Promise<SimObs> {
+  const attrs = { workflow_id: wfId(), kind: "tool", tool: "turtle_sim", step: input.step ?? 0 };
+  emitLog("info", `[step ${input.step ?? 0}] turtle_sim INPUT (program):\n${input.program.slice(0, 6000)}`, attrs);
   const c = await conn(input.workSession);
   await lang.runJs(c, `await fs.writeFile(${JSON.stringify(WORK_PROG)}, ${JSON.stringify(input.program)}); console.log('wrote ' + ${JSON.stringify(input.program.length)} + ' bytes');`);
   const res = parseSim(await lang.runJs(c, validatorFromWorkCode(input.envs)));
-  return { ...res, observation: observe(res) };
+  const observation = observe(res);
+  emitLog("info", `[step ${input.step ?? 0}] turtle_sim OUTPUT:\n${observation.slice(0, 4000)}`, attrs);
+  return { ...res, observation };
 }
 
 // check_completed: the DETERMINISTIC VALIDATOR that gates the loop (validator-in-the-
@@ -376,8 +382,13 @@ export async function checkCompleted(input: { workSession: string; envs: Env[] }
   return { complete: res.passed, feedback, score: res.score, total: res.total, program };
 }
 
-// run_js: raw sandbox passthrough for the agent's own inspection.
-export async function runJs(input: { workSession: string; code: string }): Promise<{ text: string }> {
+// run_js: raw sandbox passthrough for the agent's own inspection. The code (tool INPUT)
+// and its output are tee'd to Loki, tagged by workflow_id + step.
+export async function runJs(input: { workSession: string; code: string; step?: number }): Promise<{ text: string }> {
+  const attrs = { workflow_id: wfId(), kind: "tool", tool: "run_js", step: input.step ?? 0 };
+  emitLog("info", `[step ${input.step ?? 0}] run_js INPUT (code):\n${input.code.slice(0, 6000)}`, attrs);
   const c = await conn(input.workSession);
-  return { text: (await lang.runJs(c, input.code)).slice(0, 8000) };
+  const text = (await lang.runJs(c, input.code)).slice(0, 8000);
+  emitLog("info", `[step ${input.step ?? 0}] run_js OUTPUT:\n${text.slice(0, 4000)}`, attrs);
+  return { text };
 }
