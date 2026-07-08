@@ -1,6 +1,7 @@
 // Temporal-backed MCP task server: exposes the turtle RESEARCHER.
 //   tool  research_trigger({ task, environments }) -> { workflowId }   (you build the arena)
 //   tool  research_status({ workflowId })          -> {running} | {ok, files:{prog.lua}} | {error}
+//   tool  research_cancel({ workflowId, force? })  -> stop an in-progress run (graceful cancel / force terminate)
 //   resources  skill://<name>  -> every languages/skills SKILL.md (reference for the sub-agent)
 //   (SKILLS_AS_TOOLS=1 also mirrors each skill as a skill_<name> tool for resource-less clients)
 // The sub-agent (behind the workflow) writes the turtle Lua; the caller only builds the arena.
@@ -194,6 +195,38 @@ function buildServer(): McpServer {
     return { content: [{ type: "text" as const, text: JSON.stringify(out) }], structuredContent: out };
   });
 
+  server.registerTool("research_cancel", {
+    description:
+      "Stop an in-progress turtle-program-generation job (from `research_trigger`) — e.g. it is looping or no longer needed. " +
+      "Pass its `workflowId`. By default requests a GRACEFUL cancel (the run stops at its next step and research_status then " +
+      "reports it cancelled — same as the Temporal UI 'Cancel'). Set `force:true` to TERMINATE immediately (hard kill, no cleanup). " +
+      "A no-op if the run already finished. Returns { type:'cancelled'|'terminated'|'noop'|'error', ui }.",
+    inputSchema: {
+      workflowId: z.string().describe("The workflowId returned by research_trigger."),
+      force: z.boolean().optional().describe("true = terminate immediately (hard kill); default false = graceful cancel (stops at next step)."),
+    },
+  }, async ({ workflowId, force }: { workflowId: string; force?: boolean }) => {
+    const ui = `${uiBase}/namespaces/default/workflows/${workflowId}`;
+    const h = client.workflow.getHandle(workflowId);
+    let out: Record<string, unknown>;
+    try {
+      const desc = await h.describe();
+      if (desc.status.name !== "RUNNING") {
+        out = { type: "noop", msg: `workflow is ${desc.status.name}, not running — nothing to cancel`, status: desc.status.name, ui };
+      } else if (force) {
+        await h.terminate("terminated via research_cancel");
+        out = { type: "terminated", msg: "workflow terminated immediately", workflowId, ui };
+      } else {
+        await h.cancel();
+        out = { type: "cancelled", msg: "graceful cancellation requested; the run stops at its next step (poll research_status to confirm)", workflowId, ui };
+      }
+      if (out.type !== "noop") emitLog("info", `research ${out.type}: ${workflowId}`, { "workflow.id": workflowId, force: !!force });
+    } catch (e: any) {
+      out = { type: "error", msg: `cancel failed: ${String(e?.message ?? e).slice(0, 200)}`, ui };
+    }
+    return { content: [{ type: "text" as const, text: JSON.stringify(out) }], structuredContent: out };
+  });
+
   // skills over MCP: each SKILL.md as a skill://<name> resource (for the sub-agent's reference)
   for (const { name, path } of SKILLS) {
     server.registerResource(name, `skill://${name}`, { title: `${name} skill`, mimeType: "text/markdown" },
@@ -226,8 +259,8 @@ if (httpPort) {
       await transport.handleRequest(req, res, body);
     });
   });
-  http.listen(Number(httpPort), "0.0.0.0", () => console.error(`[mcp] HTTP on :${httpPort}/mcp — research_trigger, research_status, ${SKILLS.length} skill resources, ${SKILL_TOOLS.length} skill tools`));
+  http.listen(Number(httpPort), "0.0.0.0", () => console.error(`[mcp] HTTP on :${httpPort}/mcp — research_trigger, research_status, research_cancel, ${SKILLS.length} skill resources, ${SKILL_TOOLS.length} skill tools`));
 } else {
   await buildServer().connect(new StdioServerTransport());
-  console.error(`[mcp] stdio ready — research_trigger, research_status, ${SKILLS.length} skill resources, ${SKILL_TOOLS.length} skill tools`);
+  console.error(`[mcp] stdio ready — research_trigger, research_status, research_cancel, ${SKILLS.length} skill resources, ${SKILL_TOOLS.length} skill tools`);
 }
