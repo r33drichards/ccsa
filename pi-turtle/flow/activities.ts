@@ -111,7 +111,12 @@ export async function callLlm(input: { messages: unknown[]; tools: unknown[]; mo
   // parse the OpenAI SSE stream: accumulate assistant content + reassemble tool_call
   // fragments (which arrive split across deltas, keyed by index), teeing text to Loki.
   emitLog("info", `[step ${step}] llm call started (${model})`, attrs);
-  let content = "", emitted = 0, usage: any = null;
+  // glm-5.2 is a REASONING model: its chain-of-thought streams in delta.reasoning while
+  // delta.content stays empty until a final answer / tool call. Capture BOTH — content+toolCalls
+  // are the actionable output (returned), reasoning is tee'd to Loki for observability (otherwise
+  // the streamed logs are blank). Reasoning is NOT sent back in the message (not part of the
+  // OpenAI message format), it's ephemeral thinking.
+  let content = "", reasoning = "", emitted = 0, remitted = 0, usage: any = null, finish: string | null = null;
   const toolAcc: Record<number, { id: string; name: string; args: string }> = {};
   const reader = r.body.getReader();
   const dec = new TextDecoder();
@@ -119,6 +124,9 @@ export async function callLlm(input: { messages: unknown[]; tools: unknown[]; mo
   const flush = (final = false) => {
     if (content.length > emitted && (final || content.length - emitted >= 200)) {
       emitLog("info", content.slice(emitted), attrs); emitted = content.length;
+    }
+    if (reasoning.length > remitted && (final || reasoning.length - remitted >= 400)) {
+      emitLog("info", reasoning.slice(remitted), { ...attrs, kind: "reasoning" }); remitted = reasoning.length;
     }
   };
   try {
@@ -135,9 +143,18 @@ export async function callLlm(input: { messages: unknown[]; tools: unknown[]; mo
         const data = line.slice(5).trim();
         if (data === "[DONE]") continue;
         let j: any; try { j = JSON.parse(data); } catch { continue; }
+        // a provider error can arrive as an SSE data event with HTTP 200 — surface it as a
+        // retryable failure instead of silently yielding an empty completion (which the loop
+        // would misread as the agent signalling "done").
+        if (j.error) { clearAll(); recordCall("completion", model, "error"); throw new Error(`callLlm: provider error mid-stream — ${JSON.stringify(j.error).slice(0, 300)}`); }
         if (j.usage) usage = j.usage;
-        const d = j.choices?.[0]?.delta;
+        const ch = j.choices?.[0];
+        const d = ch?.delta;
+        if (ch?.finish_reason) finish = ch.finish_reason;
         if (d?.content) content += d.content;
+        // reasoning models expose CoT under `reasoning` (Ollama) or `reasoning_content` (zhipu/vLLM)
+        if (d?.reasoning) reasoning += d.reasoning;
+        else if (d?.reasoning_content) reasoning += d.reasoning_content;
         if (Array.isArray(d?.tool_calls)) for (const tc of d.tool_calls) {
           const i = tc.index ?? 0;
           const acc = toolAcc[i] || (toolAcc[i] = { id: "", name: "", args: "" });
@@ -152,10 +169,19 @@ export async function callLlm(input: { messages: unknown[]; tools: unknown[]; mo
   clearAll();
   flush(true);
 
-  recordTokens("completion", model, usage);
-  recordCall("completion", model, "ok");
   const toolCalls = Object.keys(toolAcc).map(Number).sort((a, b) => a - b)
     .map((i) => ({ id: toolAcc[i].id, name: toolAcc[i].name, arguments: toolAcc[i].args || "{}" }));
+  // A completion with NO content AND NO tool calls is not actionable — a transient provider empty,
+  // a reasoning-only stop, or (a known Ollama /v1 quirk) a DROPPED tool-call chunk despite
+  // finish_reason="tool_calls". Retry rather than return empty, which the loop would misread as the
+  // agent signalling "done" (-> checkCompleted -> "no program at /work/prog.lua yet", forever).
+  if (!content.trim() && toolCalls.length === 0) {
+    recordCall("completion", model, "error");
+    emitLog("warn", `[step ${step}] empty completion (finish=${finish}, reasoning=${reasoning.length}c, tokens=${usage?.total_tokens ?? 0}) — retrying`, attrs);
+    throw new Error(`callLlm: model produced no actionable output (finish_reason=${finish}, reasoning=${reasoning.length} chars) — retrying`);
+  }
+  recordTokens("completion", model, usage);
+  recordCall("completion", model, "ok");
   if (toolCalls.length) emitLog("info", `[step ${step}] -> tool_calls: ${toolCalls.map((t) => t.name).join(", ")}`, attrs);
   return { content, toolCalls, tokens: usage?.total_tokens ?? 0 };
 }
