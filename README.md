@@ -90,6 +90,8 @@ validator reads the file(s) back, runs the sim, and gates on `SIM_RESULT: PASS`.
 On failure the sim's assertion log is fed back to steer the next attempt.
 Multiple `@file:` nodes = multiple programs the agent controls.
 
+The bundled `sim/craftos2` harness also includes a farming regression test (`sim/test-farming.sh`) covering moist farmland inspection, wheat seed planting, and mature wheat harvest semantics.
+
 **Isolation:** the languages server runs **without `--fs-passthrough`**, so the
 sandbox cannot touch the real host disk — `/work` is all it can see. `/work`
 persists across `run_js` calls because the connection sends a fresh per-run

@@ -79,6 +79,10 @@ return {
 
   fuelUnlimited = false,
 
+  -- optional metadata for inspect() fidelity
+  blockStates = { ["0,63,0"] = { age = 7 } },
+  blockTags = { ["minecraft:wheat"] = { ["minecraft:crops"] = true } },
+
   -- optional post-conditions, run after the program finishes
   test = function(sim)
     sim.assertPos(0, 60, 0)
@@ -93,9 +97,9 @@ east `+X`, west `-X`. `turnRight` goes N→E→S→W (clockwise from above).
 ## Supported `turtle` API
 
 - **Move:** `forward back up down turnLeft turnRight` (blocked by solid blocks; costs 1 fuel)
-- **Dig:** `dig digUp digDown` (drops item into inventory; bedrock/unbreakable returns false)
-- **World query:** `detect* inspect* compare*`
-- **Place:** `place placeUp placeDown` (consumes selected slot into an air cell)
+- **Dig:** `dig digUp digDown` (drops item into inventory; bedrock/unbreakable returns false; farmland is protected from `digDown`)
+- **World query:** `detect* inspect* compare*` (`inspect*` returns configured state/tags)
+- **Place:** `place placeUp placeDown` (consumes selected slot into an air cell; built-in wheat seed planting is supported when a crop space sits over moist farmland)
 - **Inventory:** `select getSelectedSlot getItemCount getItemSpace getItemDetail transferTo`
 - **Fuel:** `getFuelLevel getFuelLimit refuel` (coal=80, charcoal=80, lava_bucket=1000, …)
 - **Chests:** `drop dropUp dropDown suck suckUp suckDown` (against `chests` cells)
@@ -120,7 +124,28 @@ Assertions (non-fatal — all run, the summary reports totals; any failure ⇒ F
 - Programs run **synchronously**: no event loop, `os.pullEvent`, `parallel`,
   `sleep`-driven timing, or coroutine-based concurrency. Write straight-line
   turtle logic, or factor the logic out of the event loop to test it.
-- No GPS, no real peripherals/modems, no crafting table, no entities, no
-  block states/NBT (inspect returns `{name=, state={}, tags={}}`).
+- No GPS, no real peripherals/modems, no crafting table, no entities.
+- Block state/tag fidelity is world-driven via `blockStates` and `blockTags`; built-in farming semantics currently cover
+  moist farmland inspection, wheat seed planting, and wheat drops from immature/mature crops.
 - A full inventory silently drops dug items, mirroring CC.
 - 64-item stacks; tool durability is not modeled.
+
+## Farming regression test
+
+Run the farming integration test with:
+
+```bash
+CRAFTOS_ROM=/path/to/craftos2-rom DYLD_LIBRARY_PATH=$PWD/craftos2-lua/src ./sim/test-farming.sh
+```
+
+### Farming semantics
+
+The fake-world simulator now includes a small built-in farming model for wheat:
+
+- `inspect*()` returns configured block `state` and `tags` from `blockStates` and `blockTags`.
+- `minecraft:farmland` is protected from `dig*()` and returns `false, "Nothing to dig here"`.
+- `turtle.place()` can plant `minecraft:wheat_seeds` into an empty crop cell in front of the turtle when the block below that cell is moist farmland.
+- `turtle.placeDown()` can plant from directly above farmland into the turtle's current crop cell when the block below is moist farmland.
+- Harvesting `minecraft:wheat` with `age >= 7` yields one `minecraft:wheat` plus one `minecraft:wheat_seeds`; immature wheat yields one seed.
+
+Use `sim/test-farming.sh` as the integration regression for this behavior.

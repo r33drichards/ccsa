@@ -97,6 +97,9 @@ function M.install(world)
   local networked = world.networked   -- arena wired up helper nodes (e.g. gps hosts)
   local generate = world.generate
   local unbreakable = world.unbreakable or { ["minecraft:bedrock"] = true }
+  local blockStates = world.blockStates or {}
+  local blockTags = world.blockTags or {}
+  local interact = world.interact or {}
 
   -- World state -------------------------------------------------------------
   -- overrides[key] = name (placed/changed) or false (explicitly air).
@@ -147,6 +150,57 @@ function M.install(world)
     end
     return initialBlock(x, y, z)
   end
+
+  local function blockStateAt(x, y, z)
+    local s = blockStates[key(x, y, z)]
+    if type(s) ~= "table" then return {} end
+    local out = {}
+    for kk, v in pairs(s) do out[kk] = v end
+    return out
+  end
+
+  local function blockTagsAt(x, y, z, name)
+    local out = {}
+    local keyed = blockTags[key(x, y, z)]
+    if type(keyed) == "table" then
+      for kk, v in pairs(keyed) do out[kk] = v and true or false end
+    end
+    local named = blockTags[name]
+    if type(named) == "table" then
+      for kk, v in pairs(named) do out[kk] = v and true or false end
+    end
+    return out
+  end
+
+  local function setBlockStateAt(x, y, z, state)
+    local k = key(x, y, z)
+    if state == nil then
+      blockStates[k] = nil
+      return
+    end
+    local out = {}
+    for kk, v in pairs(state) do out[kk] = v end
+    blockStates[k] = out
+  end
+
+  local function clearBlockMetadataAt(x, y, z)
+    local k = key(x, y, z)
+    blockStates[k] = nil
+    blockTags[k] = nil
+  end
+
+  local function cropDrops(name, state)
+    local age = type(state) == "table" and tonumber(state.age) or nil
+    if name == "minecraft:wheat" then
+      if age and age >= 7 then return { { name = "minecraft:wheat", count = 1 }, { name = "minecraft:wheat_seeds", count = 1 } } end
+      return { { name = "minecraft:wheat_seeds", count = 1 } }
+    end
+    return nil
+  end
+
+  local protectedSoil = {
+    ["minecraft:farmland"] = true,
+  }
 
   -- Turtle state ------------------------------------------------------------
   local pos = { x = start.x or 0, y = start.y or 0, z = start.z or 0 }
@@ -257,9 +311,17 @@ function M.install(world)
     local x, y, z = targetCoords(dir)
     local b = blockAt(x, y, z)
     if b == nil then return false, "Nothing to dig here" end
+    if protectedSoil[b] then return false, "Nothing to dig here" end
     if unbreakable[b] then return false, "Unbreakable block detected" end
+    local state = blockStateAt(x, y, z)
     overrides[key(x, y, z)] = false
-    addItem(b, 1) -- if inventory full, the item is silently lost (as in CC)
+    clearBlockMetadataAt(x, y, z)
+    local drops = cropDrops(b, state)
+    if drops then
+      for _, drop in ipairs(drops) do addItem(drop.name, drop.count) end
+    else
+      addItem(b, 1) -- if inventory full, the item is silently lost (as in CC)
+    end
     return true
   end
   function turtle.dig()     return digDir("forward") end
@@ -277,7 +339,7 @@ function M.install(world)
     local x, y, z = targetCoords(dir)
     local b = blockAt(x, y, z)
     if b == nil then return false, "No block to inspect" end
-    return true, { name = b, state = {}, tags = {} }
+    return true, { name = b, state = blockStateAt(x, y, z), tags = blockTagsAt(x, y, z, b) }
   end
   function turtle.inspect()     return inspectDir("forward") end
   function turtle.inspectUp()   return inspectDir("up") end
@@ -299,8 +361,62 @@ function M.install(world)
     local it = inv[selected]
     if not it or it.count < 1 then return false, "No items to place" end
     local x, y, z = targetCoords(dir)
-    if blockAt(x, y, z) ~= nil then return false, "Cannot place block here" end
+    local targetName = blockAt(x, y, z)
+    local state = blockStateAt(x, y, z)
+    local tags = blockTagsAt(x, y, z, targetName)
+
+    if it.name == "minecraft:wheat_seeds" then
+      local cropX, cropY, cropZ = x, y, z
+      if dir == "down" then
+        cropX, cropY, cropZ = pos.x, pos.y - 1, pos.z
+      end
+      local soilX, soilY, soilZ = cropX, cropY - 1, cropZ
+      if blockAt(cropX, cropY, cropZ) ~= nil then return false, "Cannot place block here" end
+      local belowName = blockAt(soilX, soilY, soilZ)
+      local belowState = blockStateAt(soilX, soilY, soilZ)
+      if belowName == "minecraft:farmland" and tonumber(belowState.moisture or 0) > 0 then
+        overrides[key(cropX, cropY, cropZ)] = "minecraft:wheat"
+        setBlockStateAt(cropX, cropY, cropZ, { age = 0 })
+        blockTags[key(cropX, cropY, cropZ)] = { ["minecraft:crops"] = true }
+        it.count = it.count - 1
+        if it.count <= 0 then inv[selected] = nil end
+        return true
+      end
+      return false, "Cannot place block here"
+    end
+
+    local handler = interact[it.name] or interact["*"]
+    if handler then
+      local result = handler({
+        dir = dir,
+        x = x, y = y, z = z,
+        target = targetName,
+        state = state,
+        tags = tags,
+        item = { name = it.name, count = it.count },
+        pos = { x = pos.x, y = pos.y, z = pos.z },
+        facing = facing,
+      })
+      if result ~= nil then
+        if result.ok == false then return false, result.reason or "Cannot place block here" end
+        if result.target ~= nil then
+          overrides[key(x, y, z)] = result.target
+        elseif result.clearTarget then
+          overrides[key(x, y, z)] = false
+        end
+        if result.state ~= nil then setBlockStateAt(x, y, z, result.state) end
+        if result.clearState then setBlockStateAt(x, y, z, nil) end
+        if result.consume ~= false then
+          local used = math.max(0, math.floor(result.consumeCount or 1))
+          it.count = it.count - used
+          if it.count <= 0 then inv[selected] = nil end
+        end
+        return true
+      end
+    end
+    if targetName ~= nil then return false, "Cannot place block here" end
     overrides[key(x, y, z)] = it.name
+    clearBlockMetadataAt(x, y, z)
     it.count = it.count - 1
     if it.count <= 0 then inv[selected] = nil end
     return true

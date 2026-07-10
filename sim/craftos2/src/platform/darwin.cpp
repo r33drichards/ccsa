@@ -23,7 +23,9 @@ extern "C" {
 #include <dlfcn.h>
 #include <execinfo.h>
 #include <libgen.h>
+#ifndef NO_PNG
 #include <png++/png.hpp>
+#endif
 #include <pthread.h>
 #include <SDL2/SDL_syswm.h>
 #include <signal.h>
@@ -134,6 +136,7 @@ void migrateOldData() {
         recursiveMove(oldpath, getBasePath());
 }
 
+#ifndef NO_PNG
 void copyImage(SDL_Surface* surf, SDL_Window* win) {
     png::solid_pixel_buffer<png::rgb_pixel> pixbuf(surf->w, surf->h);
     memcpy((void*)&pixbuf.get_bytes()[0], surf->pixels, surf->h * surf->pitch);
@@ -141,14 +144,19 @@ void copyImage(SDL_Surface* surf, SDL_Window* win) {
     img.set_pixbuf(pixbuf);
     std::stringstream ss;
     img.write_stream(ss);
-    PasteboardRef clipboard;
-    PasteboardCreate(kPasteboardClipboard, &clipboard);
+    std::string d = ss.str();
+    const PasteboardRef clipboard = (PasteboardRef)getClipboard();
+    CFDataRef imgdata = CFDataCreate(NULL, (UInt8*)d.c_str(), d.size());
     PasteboardClear(clipboard);
-    CFDataRef imgdata = CFDataCreate(kCFAllocatorDefault, (const uint8_t*)ss.str().c_str(), ss.str().size());
     PasteboardPutItemFlavor(clipboard, NULL, kUTTypePNG, imgdata, 0);
     CFRelease(imgdata);
-    CFRelease(clipboard);
 }
+#else
+void copyImage(SDL_Surface* surf, SDL_Window* win) {
+    (void)surf;
+    (void)win;
+}
+#endif
 
 void handler(int sig) {
     void *array[25];

@@ -9,7 +9,9 @@ on:
       - "craftos2-lua/**"
       - "craftos2-lua"
       - "resources/CraftOSTest.lua"
+      - "sim/**"
       - "resources/CCT-Tests.patch"
+      - "sim/**"
       - "CraftOS-PC 2.sln"
       - "CraftOS-PC 2.vcxproj"
       - "examples/ccemux.vcxproj"
@@ -51,6 +53,9 @@ jobs:
       run: |
         cat ~/.local/share/craftos-pc/computer/0/CraftOSTest.log
         if [ -e ~/.retval ]; then exit $(cat ~/.retval); fi
+    - name: Run turtle farming integration test
+      run: ./sim/test-farming.sh
+      timeout-minutes: 2
     
   build-basic:
     name: Build & test (no optional features)

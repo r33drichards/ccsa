@@ -26,7 +26,7 @@ export const zEnv = z.object({
   recipes: z.array(zRecipe).optional(),
   nodes: z.array(zNode).optional().describe("Extra computers to run alongside the turtle — YOU wire up multi-node setups like GPS (4 non-coplanar host nodes). The turtle auto-equips a wireless modem and publishes its position when `nodes` is set, so gps.locate() works from the turtle program."),
   nilSim: z.boolean().optional().describe("Run the turtle program with the `sim` global NIL'd — exercises the REAL-device path, so the program must use gps.locate()/peripherals/config, not sim.*. The invariant test still verifies the real end state. Pair with `nodes` (gps hosts) to test GPS navigation."),
-  test: z.string().describe("Lua body of test(sim): invariant assertions (see tool description for the sim API)."),
+  test: z.string().describe("Lua body of test(sim): invariant assertions (see tool description for the sim API, including block state/tag inspection and farming semantics such as wheat planting/harvest)."),
 });
 export type Env = z.infer<typeof zEnv>;
 
