@@ -276,7 +276,6 @@ function M.install(world)
       state.turtles[tostring(shared.id)] = exportTurtle()
       writeShared(state)
     end
-    local own = sharedState and sharedState.turtles and sharedState.turtles[tostring(shared.id)]
     sharedState = state
     overrides = state.overrides or {}
     blockStates = state.blockStates or {}
@@ -288,9 +287,7 @@ function M.install(world)
       if type(spec) == "table" and spec.double and chests[k] then chests[spec.double] = chests[k] end
     end
     state.turtles = state.turtles or {}
-    if own then
-      importTurtle(own)
-    elseif state.turtles[tostring(shared.id)] then
+    if state.turtles[tostring(shared.id)] then
       importTurtle(state.turtles[tostring(shared.id)])
     else
       state.turtles[tostring(shared.id)] = exportTurtle()
