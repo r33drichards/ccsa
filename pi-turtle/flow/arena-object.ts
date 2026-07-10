@@ -4,6 +4,7 @@
 import { z } from "zod";
 
 export const zStack = z.object({ name: z.string(), count: z.number().int().positive() });
+export const zInventory = z.record(z.string(), zStack);
 export const zChest = z.union([
   z.array(zStack),
   z.object({ items: z.array(zStack).default([]), double: z.string().optional(), capacity: z.number().int().optional() }),
@@ -21,7 +22,16 @@ export const zNode = z.object({
 });
 export const zEnv = z.object({
   name: z.string().optional(),
-  start: z.object({ x: z.number(), y: z.number(), z: z.number(), facing: z.string(), fuel: z.number() }).partial().optional(),
+  start: z.object({
+    x: z.number(),
+    y: z.number(),
+    z: z.number(),
+    facing: z.string(),
+    fuel: z.number(),
+    inventory: zInventory.optional().describe('Pre-filled turtle slots, e.g. { "1": { name, count } }'),
+  }).partial().optional(),
+  blocks: z.record(z.string(), z.string()).optional().describe('Map "x,y,z" -> block name; omitted cells default to air.'),
+  unbreakable: z.record(z.string(), z.boolean()).optional().describe('Map of block names that cannot be dug.'),
   chests: z.record(z.string(), zChest).optional(),
   recipes: z.array(zRecipe).optional(),
   nodes: z.array(zNode).optional().describe("Extra computers to run alongside the turtle — YOU wire up multi-node setups like GPS (4 non-coplanar host nodes). The turtle auto-equips a wireless modem and publishes its position when `nodes` is set, so gps.locate() works from the turtle program."),
@@ -43,6 +53,9 @@ function lua(v: unknown): string {
 // (system prompt) and the validator (sim.ts builds craftos nodes from this).
 export function envToWorldLua(e: Env): string {
   const s = { x: 8, y: 64, z: 8, facing: "south", fuel: 20000, ...(e.start || {}) };
+  const inv = s.inventory
+    ? "{ " + Object.entries(s.inventory).map(([slot, it]) => `[${Number(slot)}] = { name = '${it.name}', count = ${it.count} }`).join(", ") + " }"
+    : null;
   const chests = e.chests
     ? "{ " + Object.entries(e.chests).map(([k, c]) => {
         const items = Array.isArray(c) ? c : c.items;
@@ -53,9 +66,11 @@ export function envToWorldLua(e: Env): string {
       }).join(", ") + " }"
     : "{}";
   const recipes = e.recipes && e.recipes.length ? lua(e.recipes) : null;
+  const blocks = e.blocks ? lua(e.blocks) : null;
+  const unbreakable = e.unbreakable ? lua(e.unbreakable) : null;
   const networked = e.nodes && e.nodes.length ? "\n  networked = true," : "";
   return `return {
-  start = { x = ${s.x}, y = ${s.y}, z = ${s.z}, facing = '${s.facing}', fuel = ${s.fuel} },${networked}
+  start = { x = ${s.x}, y = ${s.y}, z = ${s.z}, facing = '${s.facing}', fuel = ${s.fuel}${inv ? `, inventory = ${inv}` : ""} },${networked}${blocks ? `\n  blocks = ${blocks},` : ""}${unbreakable ? `\n  unbreakable = ${unbreakable},` : ""}
   chests = ${chests},${recipes ? `\n  recipes = ${recipes},` : ""}
   test = function(sim)
 ${e.test.split("\n").map((l) => "    " + l).join("\n")}
