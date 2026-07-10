@@ -80,88 +80,165 @@ task: >-
 
 sim:
   timeout_ms: 60000
+  worlds:
+    sim_from_home_world_1: |
+      local XMIN, XMAX, ZMIN, ZMAX = 3, 13, 33, 53
+      return {
+        start = { x = 13, y = 58, z = 33, facing = 'south', fuel = 20000 },
+        chests = { ['13,59,33'] = {} },
+        generate = function(x, y, z)
+          if x < XMIN or x > XMAX or z < ZMIN or z > ZMAX then return nil end
+          if y == 56 then return 'minecraft:dirt' end
+          if y == 57 then
+            if (x + z) % 2 == 0 then return 'minecraft:melon' else return 'minecraft:melon_stem' end
+          end
+          return nil
+        end,
+        test = function(sim)
+          local remaining, stems = 0, 0
+          for x = XMIN, XMAX do
+            for z = ZMIN, ZMAX do
+              local b = sim.block(x, 57, z)
+              if (x + z) % 2 == 0 then
+                if b == 'minecraft:melon' then remaining = remaining + 1 end
+              elseif b == 'minecraft:melon_stem' then
+                stems = stems + 1
+              end
+            end
+          end
+          sim.assertEq(remaining, 0, 'all eligible melons harvested')
+          sim.assertEq(stems, 115, 'melon stems left untouched')
+          sim.assertPos(13, 58, 33, 'ended at HOME')
+          local chest = sim.chest(13, 59, 33)
+          local total = 0
+          if chest then for _, it in ipairs(chest) do
+            if it.name == 'minecraft:melon' then total = total + it.count end
+          end end
+          sim.assertEq(total, 116, 'all 116 melons deposited in chest')
+        end,
+      }
+
+    sim_from_far_world_2: |
+      local XMIN, XMAX, ZMIN, ZMAX = 3, 13, 33, 53
+      return {
+        start = { x = 3, y = 58, z = 53, facing = 'east', fuel = 20000 },
+        chests = { ['13,59,33'] = {} },
+        generate = function(x, y, z)
+          if x < XMIN or x > XMAX or z < ZMIN or z > ZMAX then return nil end
+          if y == 56 then return 'minecraft:dirt' end
+          if y == 57 then
+            if (x + z) % 2 == 0 then return 'minecraft:melon' else return 'minecraft:melon_stem' end
+          end
+          return nil
+        end,
+        test = function(sim)
+          local remaining, stems = 0, 0
+          for x = XMIN, XMAX do
+            for z = ZMIN, ZMAX do
+              local b = sim.block(x, 57, z)
+              if (x + z) % 2 == 0 then
+                if b == 'minecraft:melon' then remaining = remaining + 1 end
+              elseif b == 'minecraft:melon_stem' then
+                stems = stems + 1
+              end
+            end
+          end
+          sim.assertEq(remaining, 0, 'all eligible melons harvested')
+          sim.assertEq(stems, 115, 'melon stems left untouched')
+          sim.assertPos(13, 58, 33, 'ended at HOME')
+          local chest = sim.chest(13, 59, 33)
+          local total = 0
+          if chest then for _, it in ipairs(chest) do
+            if it.name == 'minecraft:melon' then total = total + it.count end
+          end end
+          sim.assertEq(total, 116, 'all 116 melons deposited in chest')
+        end,
+      }
+
+    real_from_middle_world_3: |
+      local XMIN, XMAX, ZMIN, ZMAX = 3, 13, 33, 53
+      return {
+        start = { x = 8, y = 58, z = 43, facing = 'south', fuel = 20000 },
+        chests = { ['13,59,33'] = {} },
+        generate = function(x, y, z)
+          if x < XMIN or x > XMAX or z < ZMIN or z > ZMAX then return nil end
+          if y == 56 then return 'minecraft:dirt' end
+          if y == 57 then
+            if (x + z) % 2 == 0 then return 'minecraft:melon' else return 'minecraft:melon_stem' end
+          end
+          return nil
+        end,
+        test = function(sim)
+          local remaining, stems = 0, 0
+          for x = XMIN, XMAX do
+            for z = ZMIN, ZMAX do
+              local b = sim.block(x, 57, z)
+              if (x + z) % 2 == 0 then
+                if b == 'minecraft:melon' then remaining = remaining + 1 end
+              elseif b == 'minecraft:melon_stem' then
+                stems = stems + 1
+              end
+            end
+          end
+          sim.assertEq(remaining, 0, 'all eligible melons harvested (nil-sim/GPS)')
+          sim.assertEq(stems, 115, 'melon stems left untouched (nil-sim/GPS)')
+          sim.assertPos(13, 58, 33, 'ended at HOME (nil-sim/GPS)')
+          local chest = sim.chest(13, 59, 33)
+          local total = 0
+          if chest then for _, it in ipairs(chest) do
+            if it.name == 'minecraft:melon' then total = total + it.count end
+          end end
+          sim.assertEq(total, 116, 'all 116 melons deposited in chest (nil-sim/GPS)')
+        end,
+      }
+
+    real_from_far_world_4: |
+      local XMIN, XMAX, ZMIN, ZMAX = 3, 13, 33, 53
+      return {
+        start = { x = 3, y = 58, z = 53, facing = 'south', fuel = 20000 },
+        chests = { ['13,59,33'] = {} },
+        generate = function(x, y, z)
+          if x < XMIN or x > XMAX or z < ZMIN or z > ZMAX then return nil end
+          if y == 56 then return 'minecraft:dirt' end
+          if y == 57 then
+            if (x + z) % 2 == 0 then return 'minecraft:melon' else return 'minecraft:melon_stem' end
+          end
+          return nil
+        end,
+        test = function(sim)
+          local remaining, stems = 0, 0
+          for x = XMIN, XMAX do
+            for z = ZMIN, ZMAX do
+              local b = sim.block(x, 57, z)
+              if (x + z) % 2 == 0 then
+                if b == 'minecraft:melon' then remaining = remaining + 1 end
+              elseif b == 'minecraft:melon_stem' then
+                stems = stems + 1
+              end
+            end
+          end
+          sim.assertEq(remaining, 0, 'all eligible melons harvested (nil-sim/GPS)')
+          sim.assertEq(stems, 115, 'melon stems left untouched (nil-sim/GPS)')
+          sim.assertPos(13, 58, 33, 'ended at HOME (nil-sim/GPS)')
+          local chest = sim.chest(13, 59, 33)
+          local total = 0
+          if chest then for _, it in ipairs(chest) do
+            if it.name == 'minecraft:melon' then total = total + it.count end
+          end end
+          sim.assertEq(total, 116, 'all 116 melons deposited in chest (nil-sim/GPS)')
+        end,
+      }
+
   nodes:
     # ================= GROUP 1: sim path (sim available) =================
     - label: sim_from_home
       collect: true
       program: "@file:melon.lua"
-      world_lua: |
-        local XMIN, XMAX, ZMIN, ZMAX = 3, 13, 33, 53
-        return {
-          start = { x = 13, y = 58, z = 33, facing = 'south', fuel = 20000 },
-          chests = { ['13,59,33'] = {} },
-          generate = function(x, y, z)
-            if x < XMIN or x > XMAX or z < ZMIN or z > ZMAX then return nil end
-            if y == 56 then return 'minecraft:dirt' end
-            if y == 57 then
-              if (x + z) % 2 == 0 then return 'minecraft:melon' else return 'minecraft:melon_stem' end
-            end
-            return nil
-          end,
-          test = function(sim)
-            local remaining, stems = 0, 0
-            for x = XMIN, XMAX do
-              for z = ZMIN, ZMAX do
-                local b = sim.block(x, 57, z)
-                if (x + z) % 2 == 0 then
-                  if b == 'minecraft:melon' then remaining = remaining + 1 end
-                elseif b == 'minecraft:melon_stem' then
-                  stems = stems + 1
-                end
-              end
-            end
-            sim.assertEq(remaining, 0, 'all eligible melons harvested')
-            sim.assertEq(stems, 115, 'melon stems left untouched')
-            sim.assertPos(13, 58, 33, 'ended at HOME')
-            local chest = sim.chest(13, 59, 33)
-            local total = 0
-            if chest then for _, it in ipairs(chest) do
-              if it.name == 'minecraft:melon' then total = total + it.count end
-            end end
-            sim.assertEq(total, 116, 'all 116 melons deposited in chest')
-          end,
-        }
-
+      world: sim_from_home_world_1
     - label: sim_from_far
       collect: true
       program: "@file:melon.lua"
-      world_lua: |
-        local XMIN, XMAX, ZMIN, ZMAX = 3, 13, 33, 53
-        return {
-          start = { x = 3, y = 58, z = 53, facing = 'east', fuel = 20000 },
-          chests = { ['13,59,33'] = {} },
-          generate = function(x, y, z)
-            if x < XMIN or x > XMAX or z < ZMIN or z > ZMAX then return nil end
-            if y == 56 then return 'minecraft:dirt' end
-            if y == 57 then
-              if (x + z) % 2 == 0 then return 'minecraft:melon' else return 'minecraft:melon_stem' end
-            end
-            return nil
-          end,
-          test = function(sim)
-            local remaining, stems = 0, 0
-            for x = XMIN, XMAX do
-              for z = ZMIN, ZMAX do
-                local b = sim.block(x, 57, z)
-                if (x + z) % 2 == 0 then
-                  if b == 'minecraft:melon' then remaining = remaining + 1 end
-                elseif b == 'minecraft:melon_stem' then
-                  stems = stems + 1
-                end
-              end
-            end
-            sim.assertEq(remaining, 0, 'all eligible melons harvested')
-            sim.assertEq(stems, 115, 'melon stems left untouched')
-            sim.assertPos(13, 58, 33, 'ended at HOME')
-            local chest = sim.chest(13, 59, 33)
-            local total = 0
-            if chest then for _, it in ipairs(chest) do
-              if it.name == 'minecraft:melon' then total = total + it.count end
-            end end
-            sim.assertEq(total, 116, 'all 116 melons deposited in chest')
-          end,
-        }
-
+      world: sim_from_far_world_2
     # ============ GPS constellation (4 non-coplanar hosts) ============
     - label: gps_h1
       position: [3, 70, 33]
@@ -184,81 +261,10 @@ sim:
       nil_sim: true
       position: [8, 58, 43]
       program: "@file:melon.lua"
-      world_lua: |
-        local XMIN, XMAX, ZMIN, ZMAX = 3, 13, 33, 53
-        return {
-          start = { x = 8, y = 58, z = 43, facing = 'south', fuel = 20000 },
-          chests = { ['13,59,33'] = {} },
-          generate = function(x, y, z)
-            if x < XMIN or x > XMAX or z < ZMIN or z > ZMAX then return nil end
-            if y == 56 then return 'minecraft:dirt' end
-            if y == 57 then
-              if (x + z) % 2 == 0 then return 'minecraft:melon' else return 'minecraft:melon_stem' end
-            end
-            return nil
-          end,
-          test = function(sim)
-            local remaining, stems = 0, 0
-            for x = XMIN, XMAX do
-              for z = ZMIN, ZMAX do
-                local b = sim.block(x, 57, z)
-                if (x + z) % 2 == 0 then
-                  if b == 'minecraft:melon' then remaining = remaining + 1 end
-                elseif b == 'minecraft:melon_stem' then
-                  stems = stems + 1
-                end
-              end
-            end
-            sim.assertEq(remaining, 0, 'all eligible melons harvested (nil-sim/GPS)')
-            sim.assertEq(stems, 115, 'melon stems left untouched (nil-sim/GPS)')
-            sim.assertPos(13, 58, 33, 'ended at HOME (nil-sim/GPS)')
-            local chest = sim.chest(13, 59, 33)
-            local total = 0
-            if chest then for _, it in ipairs(chest) do
-              if it.name == 'minecraft:melon' then total = total + it.count end
-            end end
-            sim.assertEq(total, 116, 'all 116 melons deposited in chest (nil-sim/GPS)')
-          end,
-        }
-
+      world: real_from_middle_world_3
     - label: real_from_far
       collect: true
       nil_sim: true
       position: [3, 58, 53]
       program: "@file:melon.lua"
-      world_lua: |
-        local XMIN, XMAX, ZMIN, ZMAX = 3, 13, 33, 53
-        return {
-          start = { x = 3, y = 58, z = 53, facing = 'south', fuel = 20000 },
-          chests = { ['13,59,33'] = {} },
-          generate = function(x, y, z)
-            if x < XMIN or x > XMAX or z < ZMIN or z > ZMAX then return nil end
-            if y == 56 then return 'minecraft:dirt' end
-            if y == 57 then
-              if (x + z) % 2 == 0 then return 'minecraft:melon' else return 'minecraft:melon_stem' end
-            end
-            return nil
-          end,
-          test = function(sim)
-            local remaining, stems = 0, 0
-            for x = XMIN, XMAX do
-              for z = ZMIN, ZMAX do
-                local b = sim.block(x, 57, z)
-                if (x + z) % 2 == 0 then
-                  if b == 'minecraft:melon' then remaining = remaining + 1 end
-                elseif b == 'minecraft:melon_stem' then
-                  stems = stems + 1
-                end
-              end
-            end
-            sim.assertEq(remaining, 0, 'all eligible melons harvested (nil-sim/GPS)')
-            sim.assertEq(stems, 115, 'melon stems left untouched (nil-sim/GPS)')
-            sim.assertPos(13, 58, 33, 'ended at HOME (nil-sim/GPS)')
-            local chest = sim.chest(13, 59, 33)
-            local total = 0
-            if chest then for _, it in ipairs(chest) do
-              if it.name == 'minecraft:melon' then total = total + it.count end
-            end end
-            sim.assertEq(total, 116, 'all 116 melons deposited in chest (nil-sim/GPS)')
-          end,
-        }
+      world: real_from_far_world_4

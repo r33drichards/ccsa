@@ -7,18 +7,21 @@ task: >-
 
 sim:
   timeout_ms: 15000
+  worlds:
+    rover_world_1: |
+      return {
+        start = { x=0, y=64, z=0, facing='south', fuel=100 },
+        blocks = { ['0,64,1'] = 'minecraft:stone' },
+        test = function(sim)
+          sim.assertBlock(0,64,1, nil, 'front block mined')
+          sim.assertItem(1, 'minecraft:stone', 1, 'stone collected in slot 1')
+          sim.assertPos(0,64,0, 'returned to start')
+          sim.assertFacing('south', 'still facing south')
+        end
+      }
+
   nodes:
     - label: rover
       collect: true
       program: "@file:turtle.lua"      # <- the agent writes this file
-      world_lua: |
-        return {
-          start = { x=0, y=64, z=0, facing='south', fuel=100 },
-          blocks = { ['0,64,1'] = 'minecraft:stone' },
-          test = function(sim)
-            sim.assertBlock(0,64,1, nil, 'front block mined')
-            sim.assertItem(1, 'minecraft:stone', 1, 'stone collected in slot 1')
-            sim.assertPos(0,64,0, 'returned to start')
-            sim.assertFacing('south', 'still facing south')
-          end
-        }
+      world: rover_world_1

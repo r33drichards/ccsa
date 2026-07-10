@@ -218,6 +218,97 @@ function M.install(world)
     end
   end
 
+  -- CraftOS worlds are shared across isolated computers through a runner-mounted
+  -- JSON state file. Every turtle belongs to a top-level named world.
+  local shared = world.__shared
+  local sharedState
+  local function encodeSlots(slots, cap)
+    local out = {}
+    for i = 1, cap do if slots[i] then out[tostring(i)] = slots[i] end end
+    return out
+  end
+  local function decodeSlots(slots, cap)
+    local out = {}
+    for i = 1, cap do
+      local item = slots and slots[tostring(i)]
+      if item then out[i] = { name = item.name, count = item.count } end
+    end
+    return out
+  end
+  local function readShared()
+    if not shared or not fs.exists(shared.path) then return nil end
+    local h = fs.open(shared.path, "r")
+    if not h then return nil end
+    local raw = h.readAll(); h.close()
+    if raw == "" then return nil end
+    return textutils.unserialiseJSON(raw)
+  end
+  local function writeShared(state)
+    if not shared then return end
+    local h = assert(fs.open(shared.path, "w"))
+    h.write(textutils.serialiseJSON(state)); h.close()
+  end
+  local function exportTurtle()
+    return {
+      pos = { x = pos.x, y = pos.y, z = pos.z }, facing = facing,
+      fuel = fuel, selected = selected, inventory = encodeSlots(inv, 16),
+    }
+  end
+  local function importTurtle(state)
+    if not state then return end
+    pos.x, pos.y, pos.z = state.pos.x, state.pos.y, state.pos.z
+    facing, fuel, selected = state.facing, state.fuel, state.selected
+    inv = decodeSlots(state.inventory, 16)
+  end
+  local function loadShared()
+    if not shared then return end
+    local state = readShared()
+    if not state then
+      state = { overrides = {}, blockStates = blockStates, blockTags = blockTags, chests = {}, chestCap = chestCap, turtles = {} }
+      for k, slots in pairs(chests) do state.chests[k] = encodeSlots(slots, chestCap[k] or 27) end
+      for id, configured in pairs(shared.starts or {}) do
+        state.turtles[id] = {
+          pos = { x = configured.x or 0, y = configured.y or 0, z = configured.z or 0 },
+          facing = configured.facing or "south", fuel = configured.fuel or 1000,
+          selected = 1, inventory = configured.inventory or {},
+        }
+      end
+      state.turtles[tostring(shared.id)] = exportTurtle()
+      writeShared(state)
+    end
+    local own = sharedState and sharedState.turtles and sharedState.turtles[tostring(shared.id)]
+    sharedState = state
+    overrides = state.overrides or {}
+    blockStates = state.blockStates or {}
+    blockTags = state.blockTags or {}
+    chestCap = state.chestCap or chestCap
+    chests = {}
+    for k, slots in pairs(state.chests or {}) do chests[k] = decodeSlots(slots, chestCap[k] or 27) end
+    for k, spec in pairs(world.chests or {}) do
+      if type(spec) == "table" and spec.double and chests[k] then chests[spec.double] = chests[k] end
+    end
+    state.turtles = state.turtles or {}
+    if own then
+      importTurtle(own)
+    elseif state.turtles[tostring(shared.id)] then
+      importTurtle(state.turtles[tostring(shared.id)])
+    else
+      state.turtles[tostring(shared.id)] = exportTurtle()
+      writeShared(state)
+    end
+  end
+  local function saveShared()
+    if not shared then return end
+    local state = sharedState or readShared() or {}
+    state.overrides, state.blockStates, state.blockTags = overrides, blockStates, blockTags
+    state.chestCap, state.chests, state.turtles = chestCap, {}, state.turtles or {}
+    for k, slots in pairs(chests) do state.chests[k] = encodeSlots(slots, chestCap[k] or 27) end
+    state.turtles[tostring(shared.id)] = exportTurtle()
+    sharedState = state
+    writeShared(state)
+  end
+  loadShared()
+
   -- Direction helpers -------------------------------------------------------
   local function vecForward()
     local v = FACING_VEC[facing]
@@ -280,6 +371,14 @@ function M.install(world)
   local turtle = {}
 
   local function tryMove(nx, ny, nz)
+    if sharedState and sharedState.turtles then
+      for id, other in pairs(sharedState.turtles) do
+        if id ~= tostring(shared.id) and other.pos
+            and other.pos.x == nx and other.pos.y == ny and other.pos.z == nz then
+          return false, "Movement obstructed"
+        end
+      end
+    end
     if blockAt(nx, ny, nz) ~= nil then return false, "Movement obstructed" end
     if not fuelUnlimited then
       if fuel <= 0 then return false, "Out of fuel" end
@@ -489,8 +588,16 @@ function M.install(world)
     local x, y, z = targetCoords(dir)
     local k = key(x, y, z)
     local c = chests[k]
+    local turtleTarget
+    if not c and sharedState and sharedState.turtles then
+      for id, other in pairs(sharedState.turtles) do
+        if id ~= tostring(shared.id) and other.pos and other.pos.x == x and other.pos.y == y and other.pos.z == z then
+          turtleTarget = other; c = decodeSlots(other.inventory, 16); break
+        end
+      end
+    end
     if not c then return false, "No inventory to drop into" end
-    local cap = chestCap[k] or 27
+    local cap = turtleTarget and 16 or (chestCap[k] or 27)
     local want = math.min(count or it.count, it.count)
     local remaining = want
     for i = 1, cap do
@@ -509,6 +616,7 @@ function M.install(world)
     it.count = it.count - moved
     if it.count <= 0 then inv[selected] = nil end
     if moved == 0 then return false, "No space for items" end
+    if turtleTarget then turtleTarget.inventory = encodeSlots(c, 16) end
     return true
   end
   -- suck: pull from the chest into the turtle. Faithful to CC:Tweaked moveItem: take
@@ -519,8 +627,16 @@ function M.install(world)
     local x, y, z = targetCoords(dir)
     local k = key(x, y, z)
     local c = chests[k]
+    local turtleTarget
+    if not c and sharedState and sharedState.turtles then
+      for id, other in pairs(sharedState.turtles) do
+        if id ~= tostring(shared.id) and other.pos and other.pos.x == x and other.pos.y == y and other.pos.z == z then
+          turtleTarget = other; c = decodeSlots(other.inventory, 16); break
+        end
+      end
+    end
     if not c then return false, "No inventory to take from" end
-    local cap = chestCap[k] or 27
+    local cap = turtleTarget and 16 or (chestCap[k] or 27)
     local firstName
     for i = 1, cap do if c[i] then firstName = c[i].name; break end end
     if not firstName then return false, "No items to take" end
@@ -538,6 +654,7 @@ function M.install(world)
       end
     end
     if moved == 0 then return false, "No space for items" end
+    if turtleTarget then turtleTarget.inventory = encodeSlots(c, 16) end
     return true
   end
   function turtle.drop(c)     return dropDir("forward", c) end
@@ -684,6 +801,20 @@ function M.install(world)
 
   turtle.native = turtle
 
+  if shared then
+    local functions = {}
+    for name, fn in pairs(turtle) do if type(fn) == "function" and name ~= "native" then functions[name] = fn end end
+    for name, wrapped in pairs(functions) do
+        turtle[name] = function(...)
+          loadShared()
+          local result = { wrapped(...) }
+          saveShared()
+          return unpack(result)
+        end
+    end
+    turtle.native = turtle
+  end
+
   -- The sim introspection / assertion API -----------------------------------
   local sim = { passed = 0, failed = 0, log = {} }
 
@@ -698,18 +829,20 @@ function M.install(world)
     return ok
   end
 
-  function sim.pos() return { x = pos.x, y = pos.y, z = pos.z } end
-  function sim.facing() return facing end
-  function sim.fuel() if fuelUnlimited then return "unlimited" end return fuel end
-  function sim.inventory() return deepcopyInv(inv) end
+  local function syncRead() if shared then loadShared() end end
+  function sim.pos() syncRead(); return { x = pos.x, y = pos.y, z = pos.z } end
+  function sim.facing() syncRead(); return facing end
+  function sim.fuel() syncRead(); if fuelUnlimited then return "unlimited" end return fuel end
+  function sim.inventory() syncRead(); return deepcopyInv(inv) end
   function sim.selectedSlot() return selected end
-  function sim.block(x, y, z) return blockAt(x, y, z) end
+  function sim.block(x, y, z) syncRead(); return blockAt(x, y, z) end
   -- Return a DEFENSIVE COPY of the chest's slots, never the live world table: a
   -- returned live reference let a program fake the end state (e.g.
   -- `sim.chest(x,y,z)[1] = {...}`) and pass every invariant without doing any
   -- turtle work — a false-positive verification. Mirrors sim.inventory()'s
   -- deepcopy. (github issues #1/#2)
   function sim.chest(x, y, z)
+    syncRead()
     local k = key(x, y, z)
     local c = chests[k]
     if c == nil then return nil end
@@ -729,6 +862,7 @@ function M.install(world)
     return out
   end
   function sim.worldDiff()
+    syncRead()
     local diff = {}
     for k in pairs(overrides) do
       local x, y, z = k:match("(-?%d+),(-?%d+),(-?%d+)")
@@ -783,6 +917,7 @@ function M.install(world)
   -- Errors thrown inside world.test count as one failure (matches harness.lua).
   sim.hasTest = type(world.test) == "function"
   function sim.runTest()
+    syncRead()
     if type(world.test) ~= "function" then return sim.passed, sim.failed end
     local ok, err = pcall(world.test, sim)
     if not ok then

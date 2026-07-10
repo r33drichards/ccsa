@@ -598,7 +598,7 @@ globalThis.__LANG = { sources: {"picat":"async function createPicat(moduleArg={}
       + " emit('SIM_RESULT: '..(__s.failed==0 and 'PASS' or 'FAIL'))"
       + " if done then done() end end end\n";
     for (const nd of (payload.nodes || [])) {
-      if (nd && (nd.world != null || nd.world_lua != null)) {
+      if (nd && nd.test !== false && nd.world != null) {
         nd.program = (nd.program || '') + CRAFTOS_POSTLUDE;
       }
     }
@@ -674,7 +674,7 @@ globalThis.__LANG = { sources: {"picat":"async function createPicat(moduleArg={}
         minizinc: 'await minizinc(model, {data?, args?}?) -> {status, solutions, statistics, stderr, exitCode}',
         autolisp: 'await autolisp(code) -> {result, output, svg}',
         lua: 'await lua(code, opts?) -> {result, stdout, error}  (lua 5.4; result = returned value, stdout = print/io.write)',
-        craftos: 'await craftos({rom?, timeout_ms?, nodes:[...]}) -> cc_run JSON (in-process ComputerCraft/CC:Tweaked emulator; {selftest:true} runs the GPS self-test)',
+        craftos: 'await craftos({rom?, timeout_ms?, worlds:{name:world}, nodes:[...]}) -> cc_run JSON; node world:"name" makes a turtle in that shared physical world',
         craftos_selftest: 'await craftos_selftest(rom?) -> {pass, result}  (GPS trilateration self-test -> (3,4,5))',
         jsx: 'jsx(source, props?) -> {html}',
         markdown: 'markdown(src) -> {html}',

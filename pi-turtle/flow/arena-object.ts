@@ -15,26 +15,35 @@ export const zRecipe = z.object({
   shaped: z.array(z.string()).optional(),
 });
 // An extra sim computer the caller wires up alongside the turtle (e.g. a GPS host).
+export const zStart = z.object({
+  x: z.number(),
+  y: z.number(),
+  z: z.number(),
+  facing: z.string(),
+  fuel: z.number(),
+  inventory: zInventory.optional().describe('Pre-filled turtle slots, e.g. { "1": { name, count } }'),
+}).partial();
 export const zNode = z.object({
   label: z.string().optional(),
   position: z.array(z.number()).length(3).optional().describe("[x,y,z] world position (modem/GPS distance)."),
   program: z.string().describe("Lua for this node. Injected globals: NET (this run's wireless net), emit(...), setpos(x,y,z), done(). Open a wireless modem with periphemu.create('top','modem',NET,true)."),
+  world: z.string().optional().describe("Named shared world reference. Nodes without this remain plain CraftOS computers."),
+  start: zStart.optional().describe("Per-turtle start override when world is set."),
+});
+export const zTurtle = z.object({
+  label: z.string().optional(),
+  start: zStart.optional(),
+  program: z.string().optional().describe("Fixed Lua for a partner turtle. Omit on the first turtle to run the generated program."),
 });
 export const zEnv = z.object({
   name: z.string().optional(),
-  start: z.object({
-    x: z.number(),
-    y: z.number(),
-    z: z.number(),
-    facing: z.string(),
-    fuel: z.number(),
-    inventory: zInventory.optional().describe('Pre-filled turtle slots, e.g. { "1": { name, count } }'),
-  }).partial().optional(),
+  start: zStart.optional(),
+  turtles: z.array(zTurtle).min(1).optional().describe("Turtles sharing one physical world. Turtle 1 runs the generated program unless program is provided; partner turtles require fixed programs."),
   blocks: z.record(z.string(), z.string()).optional().describe('Map "x,y,z" -> block name; omitted cells default to air.'),
   unbreakable: z.record(z.string(), z.boolean()).optional().describe('Map of block names that cannot be dug.'),
   chests: z.record(z.string(), zChest).optional(),
   recipes: z.array(zRecipe).optional(),
-  nodes: z.array(zNode).optional().describe("Extra computers to run alongside the turtle — YOU wire up multi-node setups like GPS (4 non-coplanar host nodes). The turtle auto-equips a wireless modem and publishes its position when `nodes` is set, so gps.locate() works from the turtle program."),
+  nodes: z.array(zNode).optional().describe("Extra computers or turtles to run alongside the primary turtle. A node with world:'shared' and start becomes a turtle in the same physical world; nodes without world are plain CraftOS computers. Inline craftos worlds remain private per node."),
   nilSim: z.boolean().optional().describe("Run the turtle program with the `sim` global NIL'd — exercises the REAL-device path, so the program must use gps.locate()/peripherals/config, not sim.*. The invariant test still verifies the real end state. Pair with `nodes` (gps hosts) to test GPS navigation."),
   test: z.string().describe("Lua body of test(sim): invariant assertions (see tool description for the sim API, including block state/tag inspection and farming semantics such as wheat planting/harvest)."),
 });
@@ -82,15 +91,20 @@ export function envLabel(e: Env, i: number): string {
   return `env_${i}${e.name ? "_" + e.name.replace(/[^a-z0-9]+/gi, "_") : ""}`;
 }
 
+export function envTurtles(e: Env) {
+  if (e.turtles?.length) return e.turtles;
+  return [{ start: e.start }];
+}
+
 function envToYaml(e: Env, i: number): string {
-  const worldLua = envToWorldLua(e).split("\n").map((l) => "        " + l).join("\n");
+  const world = `${envLabel(e, i)}_shared`;
   return `    - label: ${envLabel(e, i)}
       collect: true
       program: "@file:prog.lua"
-      world_lua: |
-${worldLua}`;
+      world: ${world}`;
 }
 
 export function arenaYaml(task: string, envs: Env[], timeoutMs = 60000): string {
-  return `# ${task.replace(/\n/g, " ")}\ntask: ${JSON.stringify(task)}\nsim:\n  timeout_ms: ${timeoutMs}\n  nodes:\n${envs.map(envToYaml).join("\n")}\n`;
+  const worlds = envs.map((e, i) => `    ${envLabel(e, i)}_shared: |\n${envToWorldLua(e).split("\n").map((l) => "      " + l).join("\n")}`).join("\n");
+  return `# ${task.replace(/\n/g, " ")}\ntask: ${JSON.stringify(task)}\nsim:\n  timeout_ms: ${timeoutMs}\n  worlds:\n${worlds}\n  nodes:\n${envs.map(envToYaml).join("\n")}\n`;
 }

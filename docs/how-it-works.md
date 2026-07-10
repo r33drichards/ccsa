@@ -189,9 +189,10 @@ A `run_js` call must load the bootstrap **and** call an engine in the *same* iso
 // one run_js call
 (0,eval)(await fs.readFile('/work/bootstrap.js','utf8'));   // defines picat(), craftos()
 const out = await craftos({
+  worlds: { mine: {} },
   nodes: [
     { label: 'c1', collect: true,
-      world_lua: "return { start={x=0,y=64,z=0,facing='south',fuel=100} }",
+      world: 'mine', start: {x:0,y:64,z:0,facing:'south',fuel:100},
       program: "turtle.dig() emit('done') done()" },
   ],
 });
@@ -216,19 +217,21 @@ task: >-
   Write a turtle program that digs the block in front and returns to start.
 sim:
   timeout_ms: 15000
-  nodes:
-    - label: rover
-      collect: true
-      program: "@file:turtle.lua"        # <- the agent authors this at /work/turtle.lua
-      world_lua: |
+  worlds:
+    rover_world: |
         return {
-          start = { x=0, y=64, z=0, facing='south', fuel=100 },
           blocks = { ['0,64,1'] = 'minecraft:stone' },
           test = function(sim)                              -- the POSTCONDITION
             sim.assertBlock(0,64,1, nil, 'front block mined')
             sim.assertPos(0,64,0, 'returned to start')
           end
         }
+  nodes:
+    - label: rover
+      collect: true
+      program: "@file:turtle.lua"        # <- the agent authors this at /work/turtle.lua
+      world: rover_world
+      start: { x: 0, y: 64, z: 0, facing: south, fuel: 100 }
 ```
 
 The `world.test(sim)` runs *after* the program, tallies `sim.assert*` calls, and emits `SIM_RESULT: PASS` or `SIM_RESULT: FAIL`. That single line is the gate.

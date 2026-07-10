@@ -67,7 +67,8 @@ Add a GPS constellation so the nil-sim turtle can `gps.locate()`:
   nil_sim: true
   position: [8,58,43]           # turtle's GPS location
   program: "@file:melon.lua"
-  world_lua: |                  # start.facing MUST match START_FACING
+  worlds:
+    farm: |                     # node start.facing MUST match START_FACING
     return { start={x=8,y=58,z=43,facing='south',fuel=20000}, chests={['13,59,33']={}},
              generate=..., test=... }
 ```
@@ -75,9 +76,9 @@ Add a GPS constellation so the nil-sim turtle can `gps.locate()`:
 A working stationary turtle GPS-locates with just `periphemu.create` +
 `gps.locate` — no movement or `setpos` needed.
 
-## Farm sim (world_lua = procedural generate + postcondition)
+## Farm sim (named Lua world = procedural generate + postcondition)
 
-Use `world_lua` (JSON `world` can't carry functions). `generate(x,y,z)` paints the
+Use a Lua-string value under top-level `worlds` when functions are needed. `generate(x,y,z)` paints the
 farm; `test(sim)` asserts the end state:
 
 ```lua

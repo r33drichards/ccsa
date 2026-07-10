@@ -63,19 +63,21 @@ task: >-
   Write a turtle program that digs the block in front and returns to start.
 sim:
   timeout_ms: 15000
+  worlds:
+    mine_world: |
+      return {
+        blocks = { ['0,64,1'] = 'minecraft:stone' },
+        test = function(sim)
+          sim.assertBlock(0,64,1, nil, 'front block mined')
+          sim.assertPos(0,64,0, 'returned to start')
+        end
+      }
   nodes:
     - label: rover
       collect: true
       program: "@file:turtle.lua"        # <- the agent authors this
-      world_lua: |
-        return {
-          start = { x=0, y=64, z=0, facing='south', fuel=100 },
-          blocks = { ['0,64,1'] = 'minecraft:stone' },
-          test = function(sim)
-            sim.assertBlock(0,64,1, nil, 'front block mined')
-            sim.assertPos(0,64,0, 'returned to start')
-          end
-        }
+      world: mine_world
+      start: { x: 0, y: 64, z: 0, facing: south, fuel: 100 }
 ```
 
 ```bash

@@ -3,7 +3,7 @@
 // assemble the researcher's system prompt (skills inlined). Ported from craftgen.py.
 import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
-import { envToWorldLua, envLabel, type Env } from "./arena-object.ts";
+import { envToWorldLua, envLabel, envTurtles, type Env } from "./arena-object.ts";
 import { WORK_BOOTSTRAP, WORK_SKILLS } from "./mcp-languages.ts";
 
 const REPO = join(import.meta.dirname, "..", "..");
@@ -49,14 +49,26 @@ export function validatorFromWorkCode(envs: Env[], progPath = WORK_PROG): string
   // nodes (e.g. gps hosts). Only turtle nodes get prog.lua; nilSim turtle nodes run
   // it with `sim` shadowed to exercise the real-device path.
   const nodes: any[] = [];
+  const worlds: Record<string, string> = {};
   envs.forEach((e, i) => {
     const label = envLabel(e, i);
-    const s = { x: 8, y: 64, z: 8, ...(e.start || {}) } as { x: number; y: number; z: number };
-    const networked = !!(e.nodes && e.nodes.length);
-    nodes.push({ label, collect: true, position: [s.x, s.y, s.z], world_lua: envToWorldLua(e), __turtle: true, __nilSim: !!e.nilSim, __net: networked });
+    const worldName = `${label}_shared`;
+    worlds[worldName] = envToWorldLua(e);
+    const turtles = envTurtles(e);
+    const networked = turtles.length > 1 || !!(e.nodes && e.nodes.length);
+    turtles.forEach((t, j) => {
+      const start = { x: 8, y: 64, z: 8, ...(j === 0 ? e.start || {} : {}), ...(t.start || {}) } as { x: number; y: number; z: number };
+      nodes.push({
+        label: t.label || (j === 0 ? label : `${label}_t${j + 1}`),
+        collect: j === 0, test: j === 0, position: [start.x, start.y, start.z], world: worldName, start,
+        __turtle: true, __nilSim: j === 0 && !!e.nilSim, __net: networked,
+        __program: t.program, __primary: j === 0,
+      });
+    });
     (e.nodes || []).forEach((n, j) => {
       const hn: any = { label: n.label || `${label}_n${j}`, program: n.program };
       if (n.position) hn.position = n.position;
+      if (n.world) { hn.world = n.world === "shared" ? worldName : n.world; hn.start = n.start; }
       nodes.push(hn);
     });
   });
@@ -64,11 +76,11 @@ export function validatorFromWorkCode(envs: Env[], progPath = WORK_PROG): string
     `(0,eval)(await fs.readFile(${JSON.stringify(WORK_BOOTSTRAP)},'utf8'));\n` +
     `let __prog; try { __prog = await fs.readFile(${JSON.stringify(progPath)},'utf8'); } catch (e) { __prog = undefined; }\n` +
     `if (__prog === undefined || __prog === '') { console.log(JSON.stringify({ status:'missing' })); }\n` +
-    `else { const nodes = ${JSON.stringify(nodes)};\n` +
+    `else { const nodes = ${JSON.stringify(nodes)}; const worlds = ${JSON.stringify(worlds)};\n` +
     // Networked turtle: the arena equips a wireless modem and gives the gps hosts a
     // beat to start listening before the program pings (transparent env plumbing).
-    `  for (const n of nodes) { if (n.__turtle) { let __pre = n.__net ? "periphemu.create('top','modem',NET,true)\\nsleep(1)\\n" : ''; if (n.__nilSim) __pre += 'local sim = nil\\n'; n.program = __pre + __prog; delete n.__turtle; delete n.__nilSim; delete n.__net; } }\n` +
-    `  const out = await craftos({ nodes });\n` +
+    `  for (const n of nodes) { if (n.__turtle) { let __pre = n.__net ? "periphemu.create('top','modem',NET,true)\\nsleep(1)\\n" : ''; if (n.__nilSim) __pre += 'local sim = nil\\n'; n.program = __pre + (n.__program ?? __prog); delete n.__turtle; delete n.__nilSim; delete n.__net; delete n.__program; delete n.__primary; } }\n` +
+    `  const out = await craftos({ nodes, worlds });\n` +
     `  console.log(JSON.stringify({ nodes: out.nodes.map(n => ({ label: n.label, output: n.output })) })); }\n`
   );
 }
@@ -123,7 +135,7 @@ export function buildSystemPrompt(task: string, envs: Env[], arenaYaml: string):
       "  ⚠ In run_js, `fs`, `craftos`, `picat` are READY-MADE GLOBALS — use them directly (await fs.readFile(" +
       "path,'utf8'), await craftos({...})). NO module system: require('fs') and import are DISABLED and throw. " +
       `To run the engine yourself: (0,eval)(await fs.readFile(${JSON.stringify(WORK_BOOTSTRAP)},'utf8')); const ` +
-      "out = await craftos({ nodes:[{ label:'c1', collect:true, world_lua:'...', program:'...' }] }); " +
+      "out = await craftos({ worlds:{w:'return {...}'}, nodes:[{ label:'c1', collect:true, world:'w', start:{...}, program:'...' }] }); " +
       "console.log(JSON.stringify(out)).\n",
     "\n=== YOUR JOB ===\n" +
       `TASK: ${task}\n\n` +

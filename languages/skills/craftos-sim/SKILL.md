@@ -79,31 +79,24 @@ turtle, below).
 
 ## Turtles
 
-CraftOS-PC has no native turtle, so a node with a `world` (or `world_lua`) gets a
-fake-world `turtle` API injected (the `sim/engine.lua` engine).
-
-**`world`** — declarative JSON, **data only** (no Lua functions, because JSON
-can't carry them):
+CraftOS-PC has no native turtle. Define each fake world once under top-level
+`worlds`, then set a turtle node's `world` to that name. World values may be
+JSON data objects or Lua chunks that return a table, so procedural generators and
+`test(sim)` functions use a string world definition:
 
 ```json
-"world": {
-  "start": { "x":0,"y":0,"z":0, "facing":"south", "fuel":1000,
-             "inventory": { "1": {"name":"minecraft:cobblestone","count":64} } },
-  "blocks": { "0,63,0": "minecraft:stone", "0,62,0": "minecraft:bedrock" },
-  "chests": { "0,64,1": ["minecraft:coal"] },
-  "unbreakable": { "minecraft:bedrock": true }
+{
+  "worlds": {
+    "mine": "return { blocks={['0,64,1']='minecraft:stone'}, test=function(sim) sim.assertBlock(0,64,1,nil,'mined') end }"
+  },
+  "nodes": [
+    { "label":"rover", "world":"mine", "start":{"x":0,"y":64,"z":0,"facing":"south","fuel":100}, "program":"turtle.dig()" }
+  ]
 }
 ```
 
-**`world_lua`** — a Lua chunk that `return`s the world table, for when you need
-**functions**: a procedural `generate(x,y,z)` (terrain for any cell not in
-`blocks`) or a `test(sim)` post-condition (see [Asserting world
-state](#asserting-world-state-after-a-turtle-runs)). Takes precedence over
-`world`:
-
-```json
-"world_lua": "return { start={x=0,y=64,z=0,facing='south',fuel=1000}, generate=function(x,y,z) if y<64 then return 'minecraft:stone' end end }"
-```
+Multiple nodes referencing the same world see the same mutations and occupy the
+same coordinate space.
 
 Inside the program, `turtle.*` works (forward/back/up/down/turn*, dig*, detect*,
 inspect*, place*, select/getItemDetail/transferTo, refuel, suck/drop, fuel), and
@@ -142,17 +135,18 @@ You can call these two ways:
    finishes. The runtime then emits the assertion log, a `sim: P passed, F failed`
    summary, and a final `SIM_RESULT: PASS` / `SIM_RESULT: FAIL` line, and calls
    `done()` for you — so a `world.test` node needs no manual `emit`/`done`. An
-   error thrown inside `test` counts as one failure. (`test` requires `world_lua`,
-   since JSON `world` can't carry a function.)
+   error thrown inside `test` counts as one failure. (Put `test` in a Lua-string world definition.)
 
 Worked example — mine the block in front and assert the world afterwards:
 
 ```json
-{ "timeout_ms": 15000, "nodes": [
-  { "label": "mine", "collect": true,
-    "world_lua": "return { start={x=0,y=64,z=0,facing='south',fuel=100}, blocks={['0,64,1']='minecraft:stone'}, test=function(sim) sim.assertBlock(0,64,1,nil,'front block mined') sim.assertItem(1,'minecraft:stone',1,'stone collected') sim.assertPos(0,64,0,'stayed put') end }",
-    "program": "turtle.dig()" }
-] }
+{ "timeout_ms": 15000,
+  "worlds": { "mine": "return { blocks={['0,64,1']='minecraft:stone'}, test=function(sim) sim.assertBlock(0,64,1,nil,'front block mined') sim.assertItem(1,'minecraft:stone',1,'stone collected') sim.assertPos(0,64,0,'stayed put') end }" },
+  "nodes": [
+    { "label": "mine", "collect": true, "world": "mine",
+      "start": {"x":0,"y":64,"z":0,"facing":"south","fuel":100},
+      "program": "turtle.dig()" }
+  ] }
 ```
 
 `mine` output — the post-condition ran after `turtle.dig()`:
@@ -179,13 +173,14 @@ each step.
 
 ```json
 { "timeout_ms": 20000,
+  "worlds": { "travel": {} },
   "nodes": [
     {"label":"h1","position":[0,0,0],  "program":"periphemu.create('top','modem',NET,true) shell.run('gps','host',0,0,0)"},
     {"label":"h2","position":[20,0,0], "program":"periphemu.create('top','modem',NET,true) shell.run('gps','host',20,0,0)"},
     {"label":"h3","position":[0,20,0], "program":"periphemu.create('top','modem',NET,true) shell.run('gps','host',0,20,0)"},
     {"label":"h4","position":[0,0,20], "program":"periphemu.create('top','modem',NET,true) shell.run('gps','host',0,0,20)"},
     {"label":"rover","position":[0,0,0],"collect":true,
-     "world":{"start":{"x":0,"y":0,"z":0,"facing":"south","fuel":1000}},
+     "world":"travel","start":{"x":0,"y":0,"z":0,"facing":"south","fuel":1000},
      "program":"periphemu.create('top','modem',NET,true)\nsleep(2)\nfor step=1,5 do\n  turtle.forward()\n  local p=sim.pos()\n  setpos(p.x,p.y,p.z)\n  sleep(0.6)\n  local gx,gy,gz=gps.locate(5)\n  emit('step '..step..' world='..p.x..','..p.y..','..p.z..' gps='..tostring(gx)..','..tostring(gy)..','..tostring(gz)..' fuel='..turtle.getFuelLevel())\nend\ndone()"}
   ] }
 ```
@@ -208,4 +203,4 @@ step 5 world=0,0,5 gps=0,0,5 fuel=995
 - Give hosts a head start; have clients `sleep(2)` before `gps.locate`.
 - A node that emits multiple lines should be `"collect": true` and end with `done()`.
 - After `setpos`, `sleep(~0.5)` before reading GPS so the runtime applies the move.
-- Use `world` (JSON) for hand-placed blocks; use `world_lua` when the world needs a procedural `generate(x,y,z)` or a `test(sim)` function (JSON can't carry functions).
+- Put data-only worlds directly under `worlds`; use a Lua-string world value when functions are needed.

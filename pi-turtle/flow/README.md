@@ -89,6 +89,16 @@ npx tsx -e "import {genSortArena} from './arena.ts'; import {writeFileSync} from
 npx tsx -e "import {genCompressArena} from './arena.ts'; import {writeFileSync} from 'node:fs'; writeFileSync('arena.yaml', genCompressArena({task:'compress',inputItem:'minecraft:iron_nugget',outputItem:'minecraft:iron_ingot',perCraft:9}))"
 ```
 
-An `arena.yaml` is just a craftgen sim spec — a `world_lua` per environment whose
+An `arena.yaml` is just a craftgen sim spec — a named `worlds` entry per environment whose
 `test(sim)` asserts the invariants a correct turtle must satisfy. You can also
 hand-write one.
+# Shared turtle worlds
+
+Arena environments may declare `turtles` to run multiple turtles against one
+physical simulated world. The first turtle runs the generated program unless it
+has a fixed `program`; partner turtles use fixed programs. Helper `nodes` remain
+plain computers unless they set `world: "shared"` and a `start` position.
+
+At the raw `craftos()` layer, define top-level `worlds` and reference one by name
+from each turtle node. References share blocks, chests, world diffs, turtle
+occupancy, and adjacent turtle inventories. Turtle nodes must use named worlds.

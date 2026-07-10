@@ -52,61 +52,88 @@ task: >-
 
 sim:
   timeout_ms: 60000
+  worlds:
+    sim_exact_world_1: |
+      local N = 63
+      return {
+        start = { x = 8, y = 64, z = 8, facing = 'south', fuel = 20000 },
+        chests = {
+          ['8,65,8'] = { { name = 'minecraft:melon_slice', count = 63 } },
+          ['8,63,8'] = {},
+        },
+        test = function(sim)
+          local function sumIn(x, y, z, name)
+            local ch, t = sim.chest(x, y, z), 0
+            if ch then for _, it in ipairs(ch) do if it.name == name then t = t + it.count end end end
+            return t
+          end
+          sim.assertEq(sumIn(8, 63, 8, 'minecraft:melon'), math.floor(N / 9), 'melon blocks in lower chest')
+          sim.assertEq(sumIn(8, 65, 8, 'minecraft:melon_slice'), N % 9, 'leftover slices back in upper chest')
+          local inv, held = sim.inventory(), 0
+          for i = 1, 16 do if inv[i] then held = held + inv[i].count end end
+          sim.assertEq(held, 0, 'turtle inventory emptied')
+        end,
+      }
+
+    sim_remainder_world_2: |
+      local N = 140
+      return {
+        start = { x = 8, y = 64, z = 8, facing = 'south', fuel = 20000 },
+        chests = {
+          ['8,65,8'] = {
+            { name = 'minecraft:melon_slice', count = 64 },
+            { name = 'minecraft:melon_slice', count = 64 },
+            { name = 'minecraft:melon_slice', count = 12 },
+          },
+          ['8,63,8'] = {},
+        },
+        test = function(sim)
+          local function sumIn(x, y, z, name)
+            local ch, t = sim.chest(x, y, z), 0
+            if ch then for _, it in ipairs(ch) do if it.name == name then t = t + it.count end end end
+            return t
+          end
+          sim.assertEq(sumIn(8, 63, 8, 'minecraft:melon'), math.floor(N / 9), 'melon blocks in lower chest')
+          sim.assertEq(sumIn(8, 65, 8, 'minecraft:melon_slice'), N % 9, 'leftover slices back in upper chest')
+        end,
+      }
+
+    real_nil_sim_world_3: |
+      local N = 200
+      return {
+        start = { x = 8, y = 64, z = 8, facing = 'south', fuel = 20000 },
+        chests = {
+          ['8,65,8'] = {
+            { name = 'minecraft:melon_slice', count = 64 },
+            { name = 'minecraft:melon_slice', count = 64 },
+            { name = 'minecraft:melon_slice', count = 64 },
+            { name = 'minecraft:melon_slice', count = 8 },
+          },
+          ['8,63,8'] = {},
+        },
+        test = function(sim)
+          local function sumIn(x, y, z, name)
+            local ch, t = sim.chest(x, y, z), 0
+            if ch then for _, it in ipairs(ch) do if it.name == name then t = t + it.count end end end
+            return t
+          end
+          sim.assertEq(sumIn(8, 63, 8, 'minecraft:melon'), math.floor(N / 9), 'melon blocks in lower chest (nil-sim)')
+          sim.assertEq(sumIn(8, 65, 8, 'minecraft:melon_slice'), N % 9, 'leftover slices back in upper chest (nil-sim)')
+        end,
+      }
+
   nodes:
     # ================= GROUP 1: sim path (sim available) =================
     # 63 slices -> exactly 7 blocks, 0 leftover.
     - label: sim_exact
       collect: true
       program: "@file:compressor.lua"
-      world_lua: |
-        local N = 63
-        return {
-          start = { x = 8, y = 64, z = 8, facing = 'south', fuel = 20000 },
-          chests = {
-            ['8,65,8'] = { { name = 'minecraft:melon_slice', count = 63 } },
-            ['8,63,8'] = {},
-          },
-          test = function(sim)
-            local function sumIn(x, y, z, name)
-              local ch, t = sim.chest(x, y, z), 0
-              if ch then for _, it in ipairs(ch) do if it.name == name then t = t + it.count end end end
-              return t
-            end
-            sim.assertEq(sumIn(8, 63, 8, 'minecraft:melon'), math.floor(N / 9), 'melon blocks in lower chest')
-            sim.assertEq(sumIn(8, 65, 8, 'minecraft:melon_slice'), N % 9, 'leftover slices back in upper chest')
-            local inv, held = sim.inventory(), 0
-            for i = 1, 16 do if inv[i] then held = held + inv[i].count end end
-            sim.assertEq(held, 0, 'turtle inventory emptied')
-          end,
-        }
-
+      world: sim_exact_world_1
     # 140 slices (stacks 64+64+12) -> 15 blocks, 5 leftover.
     - label: sim_remainder
       collect: true
       program: "@file:compressor.lua"
-      world_lua: |
-        local N = 140
-        return {
-          start = { x = 8, y = 64, z = 8, facing = 'south', fuel = 20000 },
-          chests = {
-            ['8,65,8'] = {
-              { name = 'minecraft:melon_slice', count = 64 },
-              { name = 'minecraft:melon_slice', count = 64 },
-              { name = 'minecraft:melon_slice', count = 12 },
-            },
-            ['8,63,8'] = {},
-          },
-          test = function(sim)
-            local function sumIn(x, y, z, name)
-              local ch, t = sim.chest(x, y, z), 0
-              if ch then for _, it in ipairs(ch) do if it.name == name then t = t + it.count end end end
-              return t
-            end
-            sim.assertEq(sumIn(8, 63, 8, 'minecraft:melon'), math.floor(N / 9), 'melon blocks in lower chest')
-            sim.assertEq(sumIn(8, 65, 8, 'minecraft:melon_slice'), N % 9, 'leftover slices back in upper chest')
-          end,
-        }
-
+      world: sim_remainder_world_2
     # ========= GROUP 2: nil-sim / real path (sim nil'd) =========
     # `nil_sim: true` runs compressor.lua with `sim` == nil, exactly like a real
     # turtle. 200 slices (64*3 + 8) -> 22 blocks, 2 leftover.
@@ -115,26 +142,4 @@ sim:
       nil_sim: true
       position: [8, 64, 8]
       program: "@file:compressor.lua"
-      world_lua: |
-        local N = 200
-        return {
-          start = { x = 8, y = 64, z = 8, facing = 'south', fuel = 20000 },
-          chests = {
-            ['8,65,8'] = {
-              { name = 'minecraft:melon_slice', count = 64 },
-              { name = 'minecraft:melon_slice', count = 64 },
-              { name = 'minecraft:melon_slice', count = 64 },
-              { name = 'minecraft:melon_slice', count = 8 },
-            },
-            ['8,63,8'] = {},
-          },
-          test = function(sim)
-            local function sumIn(x, y, z, name)
-              local ch, t = sim.chest(x, y, z), 0
-              if ch then for _, it in ipairs(ch) do if it.name == name then t = t + it.count end end end
-              return t
-            end
-            sim.assertEq(sumIn(8, 63, 8, 'minecraft:melon'), math.floor(N / 9), 'melon blocks in lower chest (nil-sim)')
-            sim.assertEq(sumIn(8, 65, 8, 'minecraft:melon_slice'), N % 9, 'leftover slices back in upper chest (nil-sim)')
-          end,
-        }
+      world: real_nil_sim_world_3

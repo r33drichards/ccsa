@@ -54,17 +54,13 @@ struct SimNode {
     /// World position [x,y,z] used for wireless-modem distance (e.g. GPS).
     #[serde(default)]
     position: Option<[f64; 3]>,
-    /// If set, this node is a TURTLE and gets a fake-world `turtle` API backed
-    /// by this world (sim/engine.lua contract: `blocks` map "x,y,z"->name,
-    /// `start`, `chests`, `unbreakable`). Data-only (no Lua function fields).
+    /// Named top-level world. If set, this node is a turtle sharing that world's
+    /// blocks, inventories, occupancy, and mutations with every other reference.
     #[serde(default)]
-    world: Option<serde_json::Value>,
-    /// Alternative to `world`: a Lua chunk that `return`s the world table. Use
-    /// this when the world needs functions — e.g. a procedural
-    /// `generate=function(x,y,z) ... end` or a `test=function(sim) ... end`.
-    /// Takes precedence over `world`.
+    world: Option<String>,
+    /// Per-turtle start override for the named world.
     #[serde(default)]
-    world_lua: Option<String>,
+    start: Option<serde_json::Value>,
     /// Wait for this node's `emit()` output before returning (default false).
     #[serde(default)]
     collect: Option<bool>,
@@ -72,6 +68,9 @@ struct SimNode {
 
 #[derive(Deserialize, JsonSchema)]
 struct RunSimArgs {
+    /// Named world definitions. Values may be data objects or Lua chunks that
+    /// return a world table.
+    worlds: HashMap<String, serde_json::Value>,
     /// The computers/turtles to boot. They share one isolated modem network and
     /// can talk via rednet/GPS; turtles also get an in-Lua fake world.
     nodes: Vec<SimNode>,
@@ -97,7 +96,7 @@ impl CraftosMcp {
         networked ComputerCraft computers (and turtles) from a spec, run each \
         node's Lua program, and return what each node emit()s. Nodes share one \
         isolated wireless-modem network (NET) so they can use rednet/GPS; a node \
-        with a `world` becomes a turtle with a fake-world turtle API. This is the \
+        with a named `world` becomes a turtle in that shared fake world. This is the \
         general primitive — GPS, rednet protocols, turtle fleets are all just \
         programs you run on it. Mark the node(s) whose output you want with \
         collect=true."
@@ -105,12 +104,13 @@ impl CraftosMcp {
     async fn run_simulation(&self, Parameters(args): Parameters<RunSimArgs>) -> String {
         let spec = serde_json::json!({
             "timeout_ms": args.timeout_ms.unwrap_or(15000),
+            "worlds": args.worlds,
             "nodes": args.nodes.iter().map(|n| serde_json::json!({
                 "label": n.label,
                 "program": n.program,
                 "position": n.position,
                 "world": n.world,
-                "world_lua": n.world_lua,
+                "start": n.start,
                 "collect": n.collect.unwrap_or(false),
             })).collect::<Vec<_>>(),
         })

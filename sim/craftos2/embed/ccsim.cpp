@@ -35,6 +35,7 @@
 
 #include <SDL2/SDL.h>
 #include <Computer.hpp>
+#include <runtime.hpp>
 
 namespace fs = std::filesystem;
 using path_t = std::filesystem::path;
@@ -111,12 +112,14 @@ void ensure_init(const std::string& rom, const std::string& base) {
     });
 }
 
-Computer* spawn(int id, Vec3 p, const std::string& startup) {
+Computer* spawn(int id, Vec3 p, const std::string& startup, const fs::path& shared = {}) {
     { std::lock_guard<std::mutex> lk(g_pos_mutex); g_pos[id] = p; }
     fs::path d = computerDir / std::to_string(id);
     fs::create_directories(d);
     std::ofstream(d / "startup.lua") << startup;
-    return startComputer(id);
+    Computer* comp = startComputer(id);
+    if (!shared.empty()) addMount(comp, shared, "shared", false);
+    return comp;
 }
 
 std::string readFile(const fs::path& p) {
@@ -207,9 +210,11 @@ char* cc_run_result(void) { return g_last_run_result; }
 //     { "label": "host1",
 //       "program": "...lua... (NET, emit() available; turtle if world set)",
 //       "position": [x,y,z],               // optional, modem distance / GPS
-//       "world": { ...engine world... },   // optional -> this node is a turtle
+//       "world": "arena1",                // optional ref into top-level worlds
+//       "start": { ...turtle start... },   // optional override for a world ref
 //       "collect": true }                  // optional -> wait for its output
 //   ]
+//   "worlds": { "arena1": {...} }         // shared named worlds; values may be Lua strings
 // }
 // returns (caller frees with cc_free):
 //   { "net": N, "nodes": [ { "label", "id", "output", "turtle": bool } ] }
@@ -231,6 +236,7 @@ char* cc_run(const char* spec_json) {
     if (!spec.contains("nodes") || !spec["nodes"].is_array())
         return strdup("{\"error\":\"spec.nodes must be an array\"}");
     nlohmann::json& nodes = spec["nodes"];
+    nlohmann::json worlds = spec.value("worlds", nlohmann::json::object());
 
     static std::atomic<int> seq{0};
     int n = seq.fetch_add(1);
@@ -253,23 +259,44 @@ char* cc_run(const char* spec_json) {
             auto& a = nd["position"];
             if (a.size() >= 3) { pos.x = a[0].get<double>(); pos.y = a[1].get<double>(); pos.z = a[2].get<double>(); }
         }
-        bool hasWorld = nd.contains("world") && !nd["world"].is_null();
-        bool hasWorldLua = nd.contains("world_lua") && !nd["world_lua"].is_null();
-        bool turtle = hasWorld || hasWorldLua;
+        bool turtle = nd.contains("world") && !nd["world"].is_null();
+        if (turtle && !nd["world"].is_string())
+            return strdup("{\"error\":\"node.world must be a string reference into spec.worlds\"}");
+        std::string worldName = turtle ? nd["world"].get<std::string>() : "";
+        if (turtle && (!worlds.contains(worldName) || worlds[worldName].is_null())) {
+            return strdup(nlohmann::json({{"error", "unknown world ref: " + worldName}}).dump().c_str());
+        }
 
         fs::path d = computerDir / std::to_string(id);
         fs::create_directories(d);
         if (turtle) {
             if (engineSrc.empty()) engineSrc = readFile(enginePath());
             std::ofstream(d / "engine.lua") << engineSrc;
-            if (hasWorldLua) {
-                // a Lua chunk that returns the world table (may carry functions)
-                std::ofstream(d / "world.lua") << nd["world_lua"].get<std::string>();
-            } else {
-                std::ofstream(d / "world.json") << nd["world"].dump();
+            const auto& def = worlds[worldName];
+            std::ostringstream body;
+            if (def.is_string()) body << def.get<std::string>();
+            else body << "return textutils.unserialiseJSON(" << nlohmann::json(def.dump()).dump() << ")";
+            std::ostringstream worldLua;
+            worldLua << "local world = (function()\n" << body.str() << "\nend)() or {}\n";
+            if (nd.contains("start") && nd["start"].is_object())
+                worldLua << "world.start = textutils.unserialiseJSON(" << nlohmann::json(nd["start"].dump()).dump() << ")\n";
+            nlohmann::json starts = nlohmann::json::object();
+            for (size_t j = 0; j < nodes.size(); j++) {
+                const auto& peer = nodes[j];
+                if (peer.is_object() && peer.contains("world") && peer["world"].is_string()
+                    && peer["world"].get<std::string>() == worldName)
+                    starts[std::to_string(base + (int)j + 1)] = peer.value("start", nlohmann::json::object());
             }
+            worldLua << "world.__shared = { path = '/shared/state.json', id = " << id
+                     << ", starts = textutils.unserialiseJSON(" << nlohmann::json(starts.dump()).dump() << ") }\nreturn world\n";
+            std::ofstream(d / "world.lua") << worldLua.str();
         }
-        Computer* comp = spawn(id, pos, prelude(net, turtle) + "\n" + program + "\n");
+        fs::path shared;
+        if (turtle) {
+            shared = computerDir.parent_path() / "shared" / std::to_string(net) / worldName;
+            fs::create_directories(shared);
+        }
+        Computer* comp = spawn(id, pos, prelude(net, turtle) + "\n" + program + "\n", shared);
         recs.push_back({id, label, collect, turtle, comp});
     }
 

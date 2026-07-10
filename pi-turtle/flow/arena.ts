@@ -34,11 +34,8 @@ export function genCompressArena(p: Params): string {
     [0, "normal"], [per - 1, "normal"], [per, "normal"], [per + 1, "normal"],
     [5 * per, "normal"], [7 * per + Math.max(1, per - 2), "normal"], [30 * per + 4, "normal"], [11 * per + 5, "scatter"],
   ];
-  const node = (i: number, N: number, mode: "normal" | "scatter") => `    - label: env_${i}
-      collect: true
-      program: "@file:prog.lua"
-      world_lua: |
-        local N = ${N}
+  const entry = (i: number, N: number, mode: "normal" | "scatter") => ({ world: `    env_${i}_world: |
+      local N = ${N}
         return {
           start = { x = 8, y = 64, z = 8, facing = 'south', fuel = 20000 },
           recipes = { { output = { name = '${outItem}', count = 1 }, shapeless = { ['${inItem}'] = ${per} } } },
@@ -57,13 +54,20 @@ export function genCompressArena(p: Params): string {
             sim.assertEq(others(${outCS}, '${outItem}'), 0, 'purity: output chest')
             sim.assertEq(others(${inCS}, '${inItem}'), 0, 'purity: input chest')
           end,
-        }`;
+        }`, node: `    - label: env_${i}
+      collect: true
+      program: "@file:prog.lua"
+      world: env_${i}_world
+      start: { x: 8, y: 64, z: 8, facing: south, fuel: 20000 }` });
+  const entries = envs.map(([N, m], i) => entry(i + 1, N, m));
   return `# compression arena: ${inItem} -> ${outItem} (${per} -> 1)
 task: Compression turtle ${inItem} -> ${outItem} (${per} -> 1). Input chest ${above ? "ABOVE" : "BELOW"}; craft the product to the other side; return leftover (< ${per}) to the input chest.
 sim:
   timeout_ms: 60000
+  worlds:
+${entries.map((e) => e.world).join("\n")}
   nodes:
-${envs.map(([N, m], i) => node(i + 1, N, m)).join("\n")}
+${entries.map((e) => e.node).join("\n")}
 `;
 }
 
@@ -86,11 +90,8 @@ export function genSortArena(): string {
     { up: [["minecraft:dirt", 20], ["minecraft:dirt", 40]], down: [],
       front: { double: "8,64,10", stacks: [["minecraft:cobblestone", 40], ["minecraft:dirt", 15], ["minecraft:cobblestone", 64], ["minecraft:coal", 30], ["minecraft:dirt", 25], ["minecraft:cobblestone", 30], ["minecraft:coal", 12], ["minecraft:dirt", 50], ["minecraft:cobblestone", 20]] } },
   ];
-  const node = (i: number, env: Record<string, SortChest>) => `    - label: sort_env_${i}
-      collect: true
-      program: "@file:prog.lua"
-      world_lua: |
-        return {
+  const entry = (i: number, env: Record<string, SortChest>) => ({ world: `    sort_env_${i}_world: |
+      return {
           start = { x = 8, y = 64, z = 8, facing = 'south', fuel = 20000 },
           chests = { ${Object.entries(env).map(([d, c]) => chestLua(d, c)).join(", ")} },
           test = function(sim)
@@ -112,13 +113,20 @@ export function genSortArena(): string {
             end
 ${Object.entries(env).map(([d, c]) => `            check(${DIRS[d].join(", ")}, ${luaMap(merged(c))})`).join("\n")}
           end,
-        }`;
+        }`, node: `    - label: sort_env_${i}
+      collect: true
+      program: "@file:prog.lua"
+      world: sort_env_${i}_world
+      start: { x: 8, y: 64, z: 8, facing: south, fuel: 20000 }` });
+  const entries = envs.map((env, i) => entry(i + 1, env));
   return `# sort arena: consolidate + name-sort each adjacent chest in place (incl. a double chest)
 task: In-place item sorter for adjacent chests (up, down, front). Consolidate same items into minimal stacks and order slots by item name; do not move items between chests.
 sim:
   timeout_ms: 60000
+  worlds:
+${entries.map((e) => e.world).join("\n")}
   nodes:
-${envs.map((e, i) => node(i + 1, e)).join("\n")}
+${entries.map((e) => e.node).join("\n")}
 `;
 }
 
