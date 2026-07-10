@@ -118,7 +118,13 @@ Computer* spawn(int id, Vec3 p, const std::string& startup, const fs::path& shar
     fs::create_directories(d);
     std::ofstream(d / "startup.lua") << startup;
     Computer* comp = startComputer(id);
-    if (!shared.empty()) addMount(comp, shared, "shared", false);
+    if (!comp) throw std::runtime_error("Could not start CraftOS computer");
+    if (!shared.empty()) {
+        comp->mounter_initializing = true;
+        bool mounted = addMount(comp, shared, "shared", false);
+        comp->mounter_initializing = false;
+        if (!mounted) throw std::runtime_error("Could not mount shared world state");
+    }
     return comp;
 }
 
