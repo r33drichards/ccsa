@@ -43,7 +43,7 @@ export const zEnv = z.object({
   unbreakable: z.record(z.string(), z.boolean()).optional().describe('Map of block names that cannot be dug.'),
   chests: z.record(z.string(), zChest).optional(),
   recipes: z.array(zRecipe).optional(),
-  nodes: z.array(zNode).optional().describe("Extra computers or turtles to run alongside the primary turtle. A node with world:'shared' and start becomes a turtle in the same physical world; nodes without world are plain CraftOS computers. Inline craftos worlds remain private per node."),
+  nodes: z.array(zNode).optional().describe("Extra computers or turtles to run alongside the primary turtle. A node with world:'shared' and start becomes a turtle in the environment's physical world; nodes without world are plain CraftOS computers."),
   nilSim: z.boolean().optional().describe("Run the turtle program with the `sim` global NIL'd — exercises the REAL-device path, so the program must use gps.locate()/peripherals/config, not sim.*. The invariant test still verifies the real end state. Pair with `nodes` (gps hosts) to test GPS navigation."),
   test: z.string().describe("Lua body of test(sim): invariant assertions (see tool description for the sim API, including block state/tag inspection and farming semantics such as wheat planting/harvest)."),
 });
